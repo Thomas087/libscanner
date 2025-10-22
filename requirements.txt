@@ -1,0 +1,8 @@
+asgiref==3.10.0
+Django==5.2.7
+sqlparse==0.5.3
+scrapy==2.11.0
+requests==2.31.0
+beautifulsoup4==4.12.2
+PyPDF2==3.0.1
+pymupdf==1.25.2
