@@ -27,7 +27,7 @@ SECRET_KEY = os.environ.get('SECRET_KEY', "django-insecure-y9%mk+xyws959n^hv+4$i
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 
-ALLOWED_HOSTS = ['https://animalibscanner-0bc484989484.herokuapp.com/']  # Configure this properly for production
+ALLOWED_HOSTS = ['https://animalibscanner-0bc484989484.herokuapp.com/', 'animalibscanner-0bc484989484.herokuapp.com']  # Configure this properly for production
 
 
 # Application definition
