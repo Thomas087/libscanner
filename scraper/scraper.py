@@ -8,6 +8,8 @@ from typing import List, Dict, Any
 import logging
 from datetime import datetime
 import re
+import time
+import random
 from django.utils import timezone
 from .models import GovernmentDocument, NegativeKeyword
 from .constants import get_prefecture_by_domain
@@ -16,7 +18,165 @@ import PyPDF2
 import fitz  # PyMuPDF
 from urllib.parse import urljoin
 
+# Try to import fake-useragent for better user agent rotation
+try:
+    from fake_useragent import UserAgent
+    FAKE_USERAGENT_AVAILABLE = True
+except ImportError:
+    FAKE_USERAGENT_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
+
+# User agents for rotation to avoid detection
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0'
+]
+
+# Session for persistent connections and cookie handling
+session = requests.Session()
+
+# Configure session with better defaults
+session.max_redirects = 5
+
+def get_random_user_agent():
+    """Get a random user agent from the list or fake-useragent library."""
+    if FAKE_USERAGENT_AVAILABLE:
+        try:
+            ua = UserAgent()
+            return ua.random
+        except Exception as e:
+            logger.warning(f"Failed to get user agent from fake-useragent: {e}")
+            return random.choice(USER_AGENTS)
+    else:
+        return random.choice(USER_AGENTS)
+
+def get_headers():
+    """Get realistic browser headers."""
+    return {
+        'User-Agent': get_random_user_agent(),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Cache-Control': 'max-age=0'
+    }
+
+def make_request_with_retry(url: str, max_retries: int = 3, timeout: int = 30) -> requests.Response:
+    """
+    Make a request with retry logic and exponential backoff.
+    
+    Args:
+        url (str): The URL to request
+        max_retries (int): Maximum number of retries
+        timeout (int): Request timeout in seconds
+        
+    Returns:
+        requests.Response: The response object
+        
+    Raises:
+        requests.RequestException: If all retries fail
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            # Add random delay between requests to avoid rate limiting
+            if attempt > 0:
+                delay = random.uniform(1, 3) * (2 ** attempt)  # Exponential backoff
+                logger.info(f"Waiting {delay:.2f} seconds before retry {attempt}")
+                time.sleep(delay)
+            else:
+                # Random delay even for first attempt to avoid detection
+                delay = get_request_delay()
+                time.sleep(delay)
+            
+            # Update headers with new user agent for each attempt
+            session.headers.update(get_headers())
+            
+            logger.info(f"Making request to {url} (attempt {attempt + 1}/{max_retries + 1})")
+            response = session.get(url, timeout=timeout)
+            response.raise_for_status()
+            
+            logger.info(f"Request successful - Status: {response.status_code}")
+            return response
+            
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout on attempt {attempt + 1} for {url}")
+            if attempt == max_retries:
+                raise
+        except requests.exceptions.ConnectionError:
+            logger.warning(f"Connection error on attempt {attempt + 1} for {url}")
+            if attempt == max_retries:
+                raise
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:  # Rate limited
+                logger.warning(f"Rate limited on attempt {attempt + 1} for {url}")
+                if attempt == max_retries:
+                    raise
+                # Wait longer for rate limit
+                time.sleep(random.uniform(5, 10))
+            else:
+                logger.error(f"HTTP error {e.response.status_code} on attempt {attempt + 1} for {url}")
+                raise
+        except Exception as e:
+            logger.error(f"Unexpected error on attempt {attempt + 1} for {url}: {e}")
+            if attempt == max_retries:
+                raise
+    
+    raise requests.RequestException(f"All {max_retries + 1} attempts failed for {url}")
+
+def throttle_request():
+    """Add random delay between requests to avoid being blocked."""
+    delay = random.uniform(1, 3)  # Random delay between 1-3 seconds
+    logger.debug(f"Throttling request for {delay:.2f} seconds")
+    time.sleep(delay)
+
+def configure_proxy():
+    """Configure proxy settings if available."""
+    import os
+    
+    # Check for proxy environment variables
+    http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
+    https_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
+    
+    if http_proxy or https_proxy:
+        proxies = {
+            'http': http_proxy,
+            'https': https_proxy
+        }
+        session.proxies.update(proxies)
+        logger.info(f"Configured proxies: {proxies}")
+    else:
+        logger.debug("No proxy configuration found")
+
+def reset_session():
+    """Reset the session to clear cookies and start fresh."""
+    global session
+    session.close()
+    session = requests.Session()
+    session.max_redirects = 5
+    configure_proxy()
+    logger.info("Session reset completed")
+
+def get_request_delay():
+    """Get a random delay for requests to avoid detection."""
+    return random.uniform(0.5, 2.5)
+
+def initialize_scraper():
+    """Initialize the scraper with proper configuration."""
+    configure_proxy()
+    session.headers.update(get_headers())
+    logger.info("Scraper initialized with anti-detection measures")
 
 
 def contains_icpe_keywords(text: str) -> bool:
@@ -76,9 +236,10 @@ def extract_pdf_links_from_page(url: str) -> List[str]:
         List[str]: List of PDF URLs found on the page
     """
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-
+        # Add throttling before request
+        throttle_request()
+        
+        response = make_request_with_retry(url, max_retries=2, timeout=30)
         soup = BeautifulSoup(response.content, "html.parser")
 
         pdf_links = []
@@ -113,8 +274,10 @@ def extract_text_from_pdf(pdf_url: str) -> str:
         str: Extracted text content from the PDF
     """
     try:
-        response = requests.get(pdf_url, timeout=30)
-        response.raise_for_status()
+        # Add throttling before request
+        throttle_request()
+        
+        response = make_request_with_retry(pdf_url, max_retries=2, timeout=30)
 
         # Create a file-like object from the PDF content
         pdf_file = io.BytesIO(response.content)
@@ -195,9 +358,10 @@ def check_page_for_icpe(url: str) -> bool:
         bool: True if ICPE keywords are found on the page, False otherwise
     """
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-
+        # Add throttling before request
+        throttle_request()
+        
+        response = make_request_with_retry(url, max_retries=2, timeout=30)
         soup = BeautifulSoup(response.content, "html.parser")
 
         # Get all text content from the page
@@ -470,6 +634,9 @@ def scrape_government_site(
     Returns:
         List[Dict[str, Any]]: List of dictionaries containing scraped data
     """
+    # Initialize scraper with anti-detection measures
+    initialize_scraper()
+    
     logger.info(
         f"Starting government site scraping - Domain: {domain}, Keyword: '{keyword}', Offset: {offset}"
     )
@@ -483,10 +650,12 @@ def scrape_government_site(
             url = f"https://www.{domain}/contenu/recherche/(searchtext)/{keyword}?SearchText={keyword}"
             logger.debug(f"Constructed initial URL: {url}")
 
-        # Make the request
+        # Add throttling before request
+        throttle_request()
+        
+        # Make the request with retry logic
         logger.info(f"Making HTTP request to: {url}")
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
+        response = make_request_with_retry(url, max_retries=3, timeout=30)
         logger.info(
             f"HTTP request successful - Status: {response.status_code}, Content length: {len(response.content)} bytes"
         )
@@ -674,8 +843,12 @@ def scrape_all_results(domain: str, keyword: str) -> List[Dict[str, Any]]:
     Returns:
         List[Dict[str, Any]]: List of all scraped items from all pages
     """
+    # Initialize scraper with anti-detection measures
+    initialize_scraper()
+    
     all_results = []
     offset = 0
+    page_count = 0
 
     logger.info(
         f"Starting to scrape all results for domain: {domain}, keyword: {keyword}"
@@ -700,6 +873,12 @@ def scrape_all_results(domain: str, keyword: str) -> List[Dict[str, Any]]:
 
         # Increment offset by 10 for next page
         offset += 10
+        page_count += 1
+
+        # Reset session every 5 pages to avoid detection
+        if page_count % 5 == 0:
+            logger.info(f"Resetting session after {page_count} pages to avoid detection")
+            reset_session()
 
         # Safety check to prevent infinite loops (max 1000 results)
         if offset > 1000:
@@ -736,9 +915,10 @@ def scrape_generic(url: str) -> List[Dict[str, Any]]:
         List[Dict[str, Any]]: List of dictionaries containing scraped data
     """
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-
+        # Add throttling before request
+        throttle_request()
+        
+        response = make_request_with_retry(url, max_retries=2, timeout=30)
         soup = BeautifulSoup(response.content, "html.parser")
 
         # Extract domain from URL for relative link handling
