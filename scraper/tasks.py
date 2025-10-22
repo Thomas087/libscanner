@@ -75,6 +75,26 @@ def scrape_animal_keywords_task(self, keywords=None, region_filter=None, prefect
                 logger.info(f"Keyword: {keyword}")
                 
                 try:
+                    # Check if task has been revoked
+                    if self.is_aborted():
+                        logger.info("Task has been revoked, stopping execution")
+                        return {
+                            'status': 'REVOKED',
+                            'message': 'Task was cancelled by user',
+                            'results': {
+                                'summary': {
+                                    'total_prefectures': len(prefectures_to_scrape),
+                                    'total_keywords': len(keywords),
+                                    'total_operations': total_operations,
+                                    'completed_operations': current_operation,
+                                    'total_items': len(all_results),
+                                    'keywords': keywords
+                                },
+                                'results_by_keyword': results_by_keyword,
+                                'all_results': all_results
+                            }
+                        }
+                    
                     # Update task state for progress tracking
                     self.update_state(
                         state='PROGRESS',
