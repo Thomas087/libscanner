@@ -6,6 +6,7 @@ import logging
 from django.core.management.base import BaseCommand, CommandError
 from scraper.scraper import scrape_all_results
 from scraper.constants import PREFECTURES, get_prefectures_by_region, get_all_regions
+from scraper.tasks import scrape_animal_keywords_task
 
 logger = logging.getLogger('scraper')
 
@@ -67,6 +68,16 @@ class Command(BaseCommand):
             action='store_true',
             help='List all default animal keywords and exit'
         )
+        parser.add_argument(
+            '--async',
+            action='store_true',
+            help='Run scraping asynchronously using Celery task queue'
+        )
+        parser.add_argument(
+            '--task-id',
+            type=str,
+            help='Check status of a running task (requires --async)'
+        )
 
     def handle(self, *args, **options):
         # Handle list commands
@@ -88,12 +99,17 @@ class Command(BaseCommand):
                 self.stdout.write(f"  {i}. {keyword}")
             return
 
+        # Handle task status check
+        if options.get('task_id'):
+            return self._check_task_status(options['task_id'])
+
         # Determine keywords to use
         keywords = options.get('keywords') or self.ANIMAL_KEYWORDS
         region_filter = options.get('region')
         prefecture_filter = options.get('prefecture')
         output_file = options.get('output')
         output_format = options['format']
+        use_async = options.get('async', False)
 
         # Filter prefectures based on arguments
         prefectures_to_scrape = PREFECTURES.copy()
@@ -108,13 +124,77 @@ class Command(BaseCommand):
             if not prefectures_to_scrape:
                 raise CommandError(f'No prefecture found with name: {prefecture_filter}')
 
+        if use_async:
+            return self._run_async_scraping(keywords, region_filter, prefecture_filter, output_file, output_format)
+        else:
+            return self._run_sync_scraping(keywords, region_filter, prefecture_filter, output_file, output_format, prefectures_to_scrape)
+
+    def _format_results_pretty(self, results_by_keyword, keywords):
+        """Format results in a human-readable way."""
+        output = []
+        output.append("=" * 100)
+        output.append("ANIMAL KEYWORDS SCRAPING RESULTS")
+        output.append("=" * 100)
+        
+        for keyword, data in results_by_keyword.items():
+            output.append(f"\n--- KEYWORD: {keyword.upper()} ---")
+            output.append(f"Total items found: {data['total_items']}")
+            
+            # Show results by prefecture for this keyword
+            for prefecture_name, prefecture_data in data['prefectures'].items():
+                prefecture = prefecture_data['prefecture']
+                results = prefecture_data['results']
+                count = prefecture_data['count']
+                
+                if count > 0:
+                    output.append(f"\n  {prefecture['name']} ({prefecture['region']}): {count} items")
+                    
+                    # Show first 3 items as examples
+                    for i, item in enumerate(results[:3], 1):
+                        output.append(f"    Item {i}:")
+                        if 'title' in item:
+                            output.append(f"      Title: {item['title']}")
+                        if 'link' in item:
+                            output.append(f"      Link: {item['link']}")
+                        if 'description' in item:
+                            output.append(f"      Description: {item['description'][:100]}...")
+                    
+                    if len(results) > 3:
+                        output.append(f"    ... and {len(results) - 3} more items")
+                else:
+                    output.append(f"\n  {prefecture['name']} ({prefecture['region']}): No results")
+        
+        output.append("\n" + "=" * 100)
+        return "\n".join(output)
+
+    def _run_async_scraping(self, keywords, region_filter, prefecture_filter, output_file, output_format):
+        """Run scraping asynchronously using Celery."""
+        self.stdout.write("Starting asynchronous scraping task...")
+        
+        # Start the Celery task
+        task = scrape_animal_keywords_task.delay(
+            keywords=keywords,
+            region_filter=region_filter,
+            prefecture_filter=prefecture_filter,
+            output_file=output_file,
+            output_format=output_format
+        )
+        
+        self.stdout.write(f"Task started with ID: {task.id}")
+        self.stdout.write("You can check the task status using:")
+        self.stdout.write(f"  python manage.py scrape_animal_keywords --task-id {task.id}")
+        self.stdout.write("\nTask is running in the background...")
+        
+        return task.id
+
+    def _run_sync_scraping(self, keywords, region_filter, prefecture_filter, output_file, output_format, prefectures_to_scrape):
+        """Run scraping synchronously (original behavior)."""
         self.stdout.write(f"Starting to scrape {len(prefectures_to_scrape)} prefecture(s) for {len(keywords)} keyword(s)")
         self.stdout.write(f"Keywords: {', '.join(keywords)}")
         logger.info(f"Starting scraping process - {len(prefectures_to_scrape)} prefectures, {len(keywords)} keywords")
         
         all_results = []
         results_by_keyword = {}
-        results_by_prefecture = {}
         total_operations = len(prefectures_to_scrape) * len(keywords)
         current_operation = 0
 
@@ -182,16 +262,16 @@ class Command(BaseCommand):
                 all_results.extend(keyword_results)
 
             # Display comprehensive summary
-            self.stdout.write(f"\n" + "="*80)
-            self.stdout.write(f"COMPREHENSIVE SCRAPING SUMMARY")
-            self.stdout.write(f"="*80)
+            self.stdout.write("\n" + "="*80)
+            self.stdout.write("COMPREHENSIVE SCRAPING SUMMARY")
+            self.stdout.write("="*80)
             self.stdout.write(f"Total prefectures scraped: {len(prefectures_to_scrape)}")
             self.stdout.write(f"Total keywords searched: {len(keywords)}")
             self.stdout.write(f"Total operations: {total_operations}")
             self.stdout.write(f"Total items found: {len(all_results)}")
             
             # Summary by keyword
-            self.stdout.write(f"\n--- RESULTS BY KEYWORD ---")
+            self.stdout.write("\n--- RESULTS BY KEYWORD ---")
             for keyword, data in results_by_keyword.items():
                 self.stdout.write(f"{keyword}: {data['total_items']} items")
                 
@@ -205,7 +285,7 @@ class Command(BaseCommand):
                         self.stdout.write(f"    {name}: {count} items")
 
             # Summary by prefecture
-            self.stdout.write(f"\n--- RESULTS BY PREFECTURE ---")
+            self.stdout.write("\n--- RESULTS BY PREFECTURE ---")
             for prefecture in prefectures_to_scrape:
                 prefecture_name = prefecture['name']
                 total_for_prefecture = 0
@@ -253,40 +333,38 @@ class Command(BaseCommand):
         except Exception as e:
             raise CommandError(f'Error during scraping: {e}')
 
-    def _format_results_pretty(self, results_by_keyword, keywords):
-        """Format results in a human-readable way."""
-        output = []
-        output.append("=" * 100)
-        output.append("ANIMAL KEYWORDS SCRAPING RESULTS")
-        output.append("=" * 100)
+    def _check_task_status(self, task_id):
+        """Check the status of a running task."""
+        from celery.result import AsyncResult
         
-        for keyword, data in results_by_keyword.items():
-            output.append(f"\n--- KEYWORD: {keyword.upper()} ---")
-            output.append(f"Total items found: {data['total_items']}")
-            
-            # Show results by prefecture for this keyword
-            for prefecture_name, prefecture_data in data['prefectures'].items():
-                prefecture = prefecture_data['prefecture']
-                results = prefecture_data['results']
-                count = prefecture_data['count']
-                
-                if count > 0:
-                    output.append(f"\n  {prefecture['name']} ({prefecture['region']}): {count} items")
-                    
-                    # Show first 3 items as examples
-                    for i, item in enumerate(results[:3], 1):
-                        output.append(f"    Item {i}:")
-                        if 'title' in item:
-                            output.append(f"      Title: {item['title']}")
-                        if 'link' in item:
-                            output.append(f"      Link: {item['link']}")
-                        if 'description' in item:
-                            output.append(f"      Description: {item['description'][:100]}...")
-                    
-                    if len(results) > 3:
-                        output.append(f"    ... and {len(results) - 3} more items")
-                else:
-                    output.append(f"\n  {prefecture['name']} ({prefecture['region']}): No results")
+        result = AsyncResult(task_id)
         
-        output.append("\n" + "=" * 100)
-        return "\n".join(output)
+        if result.state == 'PENDING':
+            self.stdout.write(f"Task {task_id} is pending...")
+        elif result.state == 'PROGRESS':
+            meta = result.info
+            self.stdout.write(f"Task {task_id} is in progress:")
+            self.stdout.write(f"  Progress: {meta.get('current', 0)}/{meta.get('total', 0)}")
+            self.stdout.write(f"  Current: {meta.get('prefecture', 'Unknown')} - {meta.get('keyword', 'Unknown')}")
+            self.stdout.write(f"  Status: {meta.get('status', 'Unknown')}")
+        elif result.state == 'SUCCESS':
+            self.stdout.write(f"Task {task_id} completed successfully!")
+            result_data = result.result
+            if isinstance(result_data, dict):
+                self.stdout.write(f"  Message: {result_data.get('message', 'No message')}")
+                if 'results' in result_data:
+                    results = result_data['results']
+                    if 'summary' in results:
+                        summary = results['summary']
+                        self.stdout.write(f"  Total items found: {summary.get('total_items', 0)}")
+                        self.stdout.write(f"  Prefectures scraped: {summary.get('total_prefectures', 0)}")
+                        self.stdout.write(f"  Keywords searched: {summary.get('total_keywords', 0)}")
+        elif result.state == 'FAILURE':
+            self.stdout.write(f"Task {task_id} failed!")
+            self.stdout.write(f"  Error: {result.info}")
+        else:
+            self.stdout.write(f"Task {task_id} state: {result.state}")
+            if result.info:
+                self.stdout.write(f"  Info: {result.info}")
+        
+        return result.state
