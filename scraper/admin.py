@@ -187,7 +187,7 @@ class NegativeKeywordAdmin(admin.ModelAdmin):
             total_docs_before = GovernmentDocument.objects.count()
             
             # Run the cleanup (removes ALL documents with negative keywords, regardless of age)
-            removed_count = remove_documents_with_negative_keywords(days=None)
+            removed_count = remove_documents_with_negative_keywords()
             
             # Get the number of documents after cleanup
             total_docs_after = GovernmentDocument.objects.count()
