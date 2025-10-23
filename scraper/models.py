@@ -11,7 +11,7 @@ class GovernmentDocument(models.Model):
     """
     title = models.CharField(max_length=500, help_text="Title of the document")
     description = models.TextField(blank=True, null=True, help_text="Description of the document")
-    link = models.URLField(unique=True, help_text="URL to the document on the government website")
+    link = models.URLField(max_length=2048, unique=True, help_text="URL to the document on the government website")
     date_updated = models.DateTimeField(help_text="Date when the document was last updated on the government website")
     is_icpe = models.BooleanField(default=False, help_text="Whether this document is related to ICPE (Installations Classées pour la Protection de l'Environnement)")
     
