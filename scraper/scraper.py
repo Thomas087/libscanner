@@ -647,16 +647,24 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     detail_text = " ".join(card.metadata["fr-card__detail"])
                     date_updated = parse_date_from_detail(detail_text)
 
+                # Check negative keywords first (we want to delete records with negative keywords)
+                existing = existing_by_link.get(card.link)
                 if contains_negative_keywords(card.title, card.description):
-                    existing = existing_by_link.get(card.link)
                     if existing:
                         to_delete_ids.append(existing.id)
                     continue
 
+                # Check if record already exists with same link AND date_updated
+                if existing and existing.date_updated == date_updated:
+                    # Record is identical (same link + date_updated), skip it entirely
+                    logger.debug(f"Skipping unchanged record: {card.link}")
+                    continue
+
+                # Only check ICPE status if we're creating or updating a record
                 is_icpe = icpe_flag_for_item(card.title, card.description, card.link, domain)
 
-                existing = existing_by_link.get(card.link)
                 if existing:
+                    # Record exists but has different date_updated or other fields changed
                     changed = (
                         existing.title != card.title
                         or (existing.description or "") != (card.description or "")
