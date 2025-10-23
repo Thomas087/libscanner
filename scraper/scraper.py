@@ -621,6 +621,8 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
     if not scraped_cards:
         return 0
 
+    logger.info(f"Processing {len(scraped_cards)} scraped cards for domain: {domain}")
+
     prefecture_info = get_prefecture_by_domain(domain)
     pref_name = prefecture_info["name"] if prefecture_info else None
     pref_code = prefecture_info["code"] if prefecture_info else None
@@ -630,10 +632,12 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
     saved = 0
     for i in range(0, len(scraped_cards), batch_size):
         batch = scraped_cards[i:i + batch_size]
+        logger.info(f"Processing batch {i//batch_size + 1} ({len(batch)} items)")
 
         # Load existing records for this batch only
         links = [c.link for c in batch if c.link]
         existing_by_link = {d.link: d for d in GovernmentDocument.objects.filter(link__in=links)}
+        logger.debug(f"Found {len(existing_by_link)} existing records in database for this batch")
 
         to_create = []
         to_update = []
@@ -651,17 +655,22 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                 existing = existing_by_link.get(card.link)
                 if contains_negative_keywords(card.title, card.description):
                     if existing:
+                        logger.info(f"Negative keyword found in existing record, marking for deletion: '{card.title}' - {card.link}")
                         to_delete_ids.append(existing.id)
+                    else:
+                        logger.debug(f"Negative keyword found in new record, skipping: '{card.title}'")
                     continue
 
                 # Check if record already exists with same link AND date_updated
                 if existing and existing.date_updated == date_updated:
                     # Record is identical (same link + date_updated), skip it entirely
-                    logger.debug(f"Skipping unchanged record: {card.link}")
+                    logger.debug(f"Skipping unchanged record (same link + date): '{card.title}' - {card.link}")
                     continue
 
                 # Only check ICPE status if we're creating or updating a record
+                logger.debug(f"Checking ICPE status for: '{card.title}' - {card.link}")
                 is_icpe = icpe_flag_for_item(card.title, card.description, card.link, domain)
+                logger.debug(f"ICPE check result for '{card.title}': {is_icpe}")
 
                 if existing:
                     # Record exists but has different date_updated or other fields changed
@@ -675,6 +684,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                         or (region_name and existing.region_name != region_name)
                     )
                     if changed:
+                        logger.info(f"Updating existing record: '{card.title}' - {card.link} (ICPE: {is_icpe})")
                         existing.title = card.title
                         existing.description = card.description
                         existing.date_updated = date_updated
@@ -686,8 +696,11 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                         if region_name:
                             existing.region_name = region_name
                         to_update.append(existing)
+                    else:
+                        logger.debug(f"No changes detected for existing record: '{card.title}'")
                 else:
                     # Prepare new object for bulk_create
+                    logger.info(f"Creating new record: '{card.title}' - {card.link} (ICPE: {is_icpe})")
                     doc = GovernmentDocument(
                         title=card.title,
                         description=card.description,
@@ -707,12 +720,12 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
         # Perform bulk operations
         if to_delete_ids:
             GovernmentDocument.objects.filter(id__in=to_delete_ids).delete()
-            logger.debug(f"Bulk deleted {len(to_delete_ids)} items with negative keywords")
+            logger.info(f"✗ Deleted {len(to_delete_ids)} items with negative keywords")
 
         if to_create:
             GovernmentDocument.objects.bulk_create(to_create, batch_size=batch_size)
             saved += len(to_create)
-            logger.debug(f"Bulk created {len(to_create)} new items")
+            logger.info(f"✓ Created {len(to_create)} new items")
 
         if to_update:
             GovernmentDocument.objects.bulk_update(
@@ -721,8 +734,9 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                 batch_size=batch_size
             )
             saved += len(to_update)
-            logger.debug(f"Bulk updated {len(to_update)} existing items")
+            logger.info(f"↻ Updated {len(to_update)} existing items")
 
+    logger.info(f"Batch processing complete: {saved} total records saved/updated for {domain}")
     return saved
 
 
@@ -779,14 +793,17 @@ def scrape_government_site(domain: str, keyword: str, offset: int = 0) -> List[S
     """
     try:
         url = build_search_url(domain, keyword, offset)
+        logger.info(f"Scraping page at offset {offset}: {url}")
         rsp = _requester.get(url, timeout=CONFIG.request_timeout)
         soup = BeautifulSoup(rsp.content, "html.parser")
         cards = soup.find_all("div", class_="fr-card")
+        logger.debug(f"Found {len(cards)} card elements on page")
         results: List[ScrapedCard] = []
         for card in cards:
             sc = extract_card_data(card, domain)
             if sc:
                 results.append(sc)
+        logger.info(f"Extracted {len(results)} valid cards from offset {offset}")
         return results
     except requests.RequestException as e:
         logger.error(f"Request error while scraping {domain} offset {offset}: {e}")
@@ -802,18 +819,23 @@ def iterate_search_pages(
     """
     Generator that yields results page-by-page until exhaustion or limit.
     """
+    logger.info(f"Starting pagination for {domain} with keyword '{keyword}' (start={start}, step={step}, limit={limit})")
     offset = start
     page_count = 0
     while offset <= limit:
         page = scrape_government_site(domain, keyword, offset)
         if not page:
+            logger.info(f"No more results found at offset {offset}, stopping pagination")
             break
         yield page
         offset += step
         page_count += 1
         if page_count % 5 == 0:
             # Periodic session reset to reduce detection risk
+            logger.debug(f"Resetting session after {page_count} pages")
             _requester.reset()
+
+    logger.info(f"Pagination complete: scraped {page_count} pages for {domain}")
 
 
 def scrape_url(domain: str, keyword: str, offset: int = 0) -> List[Dict[str, Any]]:
@@ -831,6 +853,10 @@ def scrape_all_results(domain: str, keyword: str, batch_size: int = CONFIG.db_ba
 
     For backward compatibility, still returns list of dicts but processes in batches.
     """
+    logger.info(f"=" * 80)
+    logger.info(f"Starting full scrape for domain: {domain}, keyword: '{keyword}'")
+    logger.info(f"=" * 80)
+
     batch: List[ScrapedCard] = []
     total_saved = 0
     total_count = 0
@@ -838,26 +864,35 @@ def scrape_all_results(domain: str, keyword: str, batch_size: int = CONFIG.db_ba
     for page in iterate_search_pages(domain, keyword):
         batch.extend(page)
         total_count += len(page)
+        logger.debug(f"Current batch size: {len(batch)}, total scraped so far: {total_count}")
 
         # Process batch when it reaches batch_size
         if len(batch) >= batch_size:
+            logger.info(f"Batch threshold reached ({len(batch)} items), saving to database...")
             saved_count = save_to_database(batch, domain)
             total_saved += saved_count
-            logger.info(f"Saved batch of {saved_count} items to database (total so far: {total_saved}).")
+            logger.info(f"Progress: {total_saved} total items saved/updated so far")
             batch.clear()  # Clear batch to free memory
 
     # Process remaining items in final batch
     if batch:
+        logger.info(f"Processing final batch of {len(batch)} items...")
         saved_count = save_to_database(batch, domain)
         total_saved += saved_count
-        logger.info(f"Saved final batch of {saved_count} items to database.")
+        logger.info(f"Final batch saved: {saved_count} items")
         batch.clear()
 
+    logger.info(f"Running cleanup of negative keywords...")
     removed_count = remove_documents_with_negative_keywords(days=CONFIG.cleanup_window_days)
     if removed_count:
-        logger.info(f"Removed {removed_count} negative-keyword documents (last {CONFIG.cleanup_window_days} days).")
+        logger.info(f"Cleanup complete: removed {removed_count} documents with negative keywords (last {CONFIG.cleanup_window_days} days)")
+    else:
+        logger.info(f"Cleanup complete: no documents with negative keywords found")
 
-    logger.info(f"Total saved for {domain}/{keyword}: {total_saved} items from {total_count} scraped.")
+    logger.info(f"=" * 80)
+    logger.info(f"SCRAPING COMPLETE for {domain}/{keyword}")
+    logger.info(f"Total scraped: {total_count} items | Total saved/updated: {total_saved} items")
+    logger.info(f"=" * 80)
 
     # Return summary instead of full data to save memory
     # For backward compatibility, return empty list (data is already in DB)
