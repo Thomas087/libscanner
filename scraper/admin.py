@@ -510,17 +510,8 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
             stop_url = reverse('admin:scraper_scrapingtask_stop', args=[obj.id])
             buttons.append(
                 format_html(
-                    '<a href="{}" class="button" style="background-color: #dc3545; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px; font-weight: bold;" onclick="return confirm(\'Are you sure you want to FORCE STOP this task? This will terminate the worker process.\')">🛑 FORCE STOP</a>',
+                    '<a href="{}" class="button force-btn" style="background-color: #dc3545; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px; font-weight: 600; border: 1px solid #dc3545; transition: all 0.2s ease; display: inline-block;" onclick="return confirm(\'Are you sure you want to FORCE STOP this task? This will terminate the worker process.\')">Stop</a>',
                     stop_url
-                )
-            )
-        
-        if obj.status in ['PENDING', 'PROGRESS']:
-            progress_url = reverse('admin:scraper_scrapingtask_progress', args=[obj.id])
-            buttons.append(
-                format_html(
-                    '<a href="{}" class="button" style="background-color: #17a2b8; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px; margin-left: 5px;">Progress</a>',
-                    progress_url
                 )
             )
         
