@@ -1,6 +1,13 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import GovernmentDocument, NegativeKeyword
+from django.urls import path, reverse
+from django.shortcuts import redirect
+from django.contrib import messages
+from django.http import JsonResponse
+from django.utils import timezone
+from celery import current_app
+from .models import GovernmentDocument, NegativeKeyword, ScrapingTask, ScrapingTaskResult
+from .tasks import scrape_animal_keywords_enhanced_task
 
 
 @admin.register(GovernmentDocument)
@@ -177,4 +184,478 @@ class NegativeKeywordAdmin(admin.ModelAdmin):
     
     def has_delete_permission(self, request, obj=None):
         """Allow deleting negative keywords."""
+        return True
+
+
+class ScrapingTaskResultInline(admin.TabularInline):
+    """Inline admin for ScrapingTaskResult."""
+    model = ScrapingTaskResult
+    extra = 0
+    readonly_fields = ['prefecture_name', 'region_name', 'keyword', 'items_found', 'created_at']
+    can_delete = False
+    
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(ScrapingTask)
+class ScrapingTaskAdmin(admin.ModelAdmin):
+    """Admin interface for ScrapingTask model."""
+    
+    list_display = [
+        'task_id_short',
+        'name',
+        'status_display',
+        'progress_display',
+        'current_operation_display',
+        'total_items_found',
+        'created_at',
+        'duration_display',
+        'action_buttons'
+    ]
+    
+    list_filter = [
+        'status',
+        'name',
+        'created_at',
+        'started_at',
+        'completed_at',
+    ]
+    
+    search_fields = [
+        'task_id',
+        'name',
+        'current_prefecture',
+        'current_keyword',
+        'region_filter',
+        'prefecture_filter',
+    ]
+    
+    readonly_fields = [
+        'task_id',
+        'created_at',
+        'started_at',
+        'completed_at',
+        'last_updated',
+        'progress_percentage',
+        'duration_display',
+        'status_display',
+        'current_operation_display',
+        'results_summary_display',
+        'error_message',
+        'traceback',
+    ]
+    
+    fieldsets = (
+        ('Task Information', {
+            'fields': ('task_id', 'name', 'status_display', 'created_at', 'started_at', 'completed_at', 'last_updated')
+        }),
+        ('Parameters', {
+            'fields': ('keywords', 'region_filter', 'prefecture_filter', 'output_file', 'output_format')
+        }),
+        ('Progress', {
+            'fields': ('current_operation_display', 'progress_percentage', 'current_prefecture', 'current_keyword')
+        }),
+        ('Results', {
+            'fields': ('total_items_found', 'results_summary_display'),
+            'classes': ('collapse',)
+        }),
+        ('Error Information', {
+            'fields': ('error_message', 'traceback'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    inlines = [ScrapingTaskResultInline]
+    
+    actions = ['start_new_task', 'start_animal_keywords_task']
+    
+    list_per_page = 25
+    ordering = ['-created_at']
+    
+    def get_urls(self):
+        """Add custom URLs for task actions."""
+        urls = super().get_urls()
+        custom_urls = [
+            path('start-task/', self.admin_site.admin_view(self.start_task), name='scraper_scrapingtask_start'),
+            path('start-animal-task/', self.admin_site.admin_view(self.start_animal_task), name='scraper_scrapingtask_start_animal'),
+            path('stop-task/<int:task_id>/', self.admin_site.admin_view(self.stop_task), name='scraper_scrapingtask_stop'),
+            path('task-progress/<int:task_id>/', self.admin_site.admin_view(self.task_progress), name='scraper_scrapingtask_progress'),
+        ]
+        return custom_urls + urls
+    
+    def start_task(self, request):
+        """Start a new scraping task."""
+        if request.method == 'POST':
+            try:
+                # Get parameters from request
+                keywords = request.POST.getlist('keywords')
+                region_filter = request.POST.get('region_filter', '')
+                prefecture_filter = request.POST.get('prefecture_filter', '')
+                output_file = request.POST.get('output_file', '')
+                output_format = request.POST.get('output_format', 'pretty')
+                
+                # Create task record
+                task = ScrapingTask.objects.create(
+                    keywords=keywords,
+                    region_filter=region_filter or None,
+                    prefecture_filter=prefecture_filter or None,
+                    output_file=output_file or None,
+                    output_format=output_format
+                )
+                
+                # Start Celery task
+                celery_task = scrape_animal_keywords_enhanced_task.delay(
+                    task_id=task.id,
+                    keywords=keywords,
+                    region_filter=region_filter or None,
+                    prefecture_filter=prefecture_filter or None,
+                    output_file=output_file or None,
+                    output_format=output_format
+                )
+                
+                # Update task record with Celery task ID
+                task.task_id = celery_task.id
+                task.started_at = timezone.now()
+                task.save()
+                
+                messages.success(request, f'Task started successfully! Task ID: {task.id}')
+                return redirect('admin:scraper_scrapingtask_changelist')
+                
+            except Exception as e:
+                messages.error(request, f'Failed to start task: {str(e)}')
+                return redirect('admin:scraper_scrapingtask_changelist')
+        
+        # Show start task form
+        from django.template.response import TemplateResponse
+        context = {
+            'title': 'Start New Scraping Task',
+            'has_permission': True,
+        }
+        return TemplateResponse(request, 'admin/scraper/scrapingtask/start_task.html', context)
+    
+    def start_animal_task(self, request):
+        """Start the default animal keywords task."""
+        try:
+            # Check if there are any running tasks
+            running_tasks = ScrapingTask.objects.filter(status__in=['PENDING', 'PROGRESS'])
+            if running_tasks.exists():
+                messages.warning(request, f'There are {running_tasks.count()} task(s) already running. Please wait for them to complete or stop them first.')
+                return redirect('admin:scraper_scrapingtask_changelist')
+            
+            # Default animal keywords
+            keywords = [
+                "bovin",
+                "porcin", 
+                "volaille",
+                "poules",
+                "pondeuses",
+                "poulets"
+            ]
+            
+            # Create task record
+            task = ScrapingTask.objects.create(
+                keywords=keywords,
+                output_format='pretty'
+            )
+            
+            # Start Celery task
+            celery_task = scrape_animal_keywords_enhanced_task.delay(
+                task_id=task.id,
+                keywords=keywords,
+                output_format='pretty'
+            )
+            
+            # Update task record with Celery task ID
+            task.task_id = celery_task.id
+            task.started_at = timezone.now()
+            task.save()
+            
+            messages.success(request, f'🐄 Animal keywords scraping task started! Task ID: {task.id}')
+            messages.info(request, f'Keywords: {", ".join(keywords)}')
+            messages.info(request, 'You can monitor the progress in the task list below.')
+            return redirect('admin:scraper_scrapingtask_changelist')
+            
+        except Exception as e:
+            messages.error(request, f'Failed to start animal keywords task: {str(e)}')
+            return redirect('admin:scraper_scrapingtask_changelist')
+    
+    def stop_task(self, request, task_id):
+        """Stop a running task."""
+        try:
+            task = ScrapingTask.objects.get(id=task_id)
+            
+            # Revoke the Celery task
+            current_app.control.revoke(task.task_id, terminate=True)
+            
+            # Update task status
+            task.mark_revoked()
+            
+            messages.success(request, f'Task {task_id} has been stopped.')
+            return redirect('admin:scraper_scrapingtask_changelist')
+            
+        except ScrapingTask.DoesNotExist:
+            messages.error(request, f'Task {task_id} not found.')
+            return redirect('admin:scraper_scrapingtask_changelist')
+        except Exception as e:
+            messages.error(request, f'Failed to stop task: {str(e)}')
+            return redirect('admin:scraper_scrapingtask_changelist')
+    
+    def task_progress(self, request, task_id):
+        """Get task progress as JSON."""
+        try:
+            task = ScrapingTask.objects.get(id=task_id)
+            return JsonResponse({
+                'status': task.status,
+                'progress_percentage': task.progress_percentage,
+                'current_operation': task.current_operation,
+                'total_operations': task.total_operations,
+                'current_prefecture': task.current_prefecture,
+                'current_keyword': task.current_keyword,
+                'total_items_found': task.total_items_found,
+            })
+        except ScrapingTask.DoesNotExist:
+            return JsonResponse({'error': 'Task not found'}, status=404)
+    
+    def task_id_short(self, obj):
+        """Display shortened task ID."""
+        if len(obj.task_id) > 20:
+            return f"{obj.task_id[:20]}..."
+        return obj.task_id
+    task_id_short.short_description = "Task ID"
+    task_id_short.admin_order_field = "task_id"
+    
+    def status_display(self, obj):
+        """Display status with color coding."""
+        colors = {
+            'PENDING': 'orange',
+            'PROGRESS': 'blue',
+            'SUCCESS': 'green',
+            'FAILURE': 'red',
+            'REVOKED': 'gray',
+            'RETRY': 'purple',
+        }
+        color = colors.get(obj.status, 'black')
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{}</span>',
+            color,
+            obj.get_status_display()
+        )
+    status_display.short_description = "Status"
+    status_display.admin_order_field = "status"
+    
+    def progress_display(self, obj):
+        """Display progress bar."""
+        if obj.total_operations == 0:
+            return "N/A"
+        
+        percentage = obj.progress_percentage
+        color = "green" if percentage >= 80 else "blue" if percentage >= 50 else "orange"
+        
+        return format_html(
+            '<div style="width: 100px; background-color: #f0f0f0; border-radius: 3px;">'
+            '<div style="width: {}%; background-color: {}; height: 20px; border-radius: 3px; text-align: center; color: white; font-size: 12px; line-height: 20px;">{}%</div>'
+            '</div>',
+            percentage,
+            color,
+            f"{percentage:.1f}"
+        )
+    progress_display.short_description = "Progress"
+    
+    def current_operation_display(self, obj):
+        """Display current operation."""
+        if obj.total_operations == 0:
+            return "N/A"
+        return f"{obj.current_operation}/{obj.total_operations}"
+    current_operation_display.short_description = "Operations"
+    
+    def duration_display(self, obj):
+        """Display task duration."""
+        duration = obj.duration
+        if duration:
+            total_seconds = int(duration.total_seconds())
+            hours, remainder = divmod(total_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            if hours > 0:
+                return f"{hours}h {minutes}m {seconds}s"
+            elif minutes > 0:
+                return f"{minutes}m {seconds}s"
+            else:
+                return f"{seconds}s"
+        return "N/A"
+    duration_display.short_description = "Duration"
+    
+    def results_summary_display(self, obj):
+        """Display results summary."""
+        if obj.results_summary:
+            summary = obj.results_summary
+            return format_html(
+                '<strong>Total Items:</strong> {}<br>'
+                '<strong>Prefectures:</strong> {}<br>'
+                '<strong>Keywords:</strong> {}<br>'
+                '<strong>Operations:</strong> {}',
+                summary.get('total_items', 0),
+                summary.get('total_prefectures', 0),
+                summary.get('total_keywords', 0),
+                summary.get('total_operations', 0)
+            )
+        return "No results yet"
+    results_summary_display.short_description = "Results Summary"
+    
+    def action_buttons(self, obj):
+        """Display action buttons."""
+        buttons = []
+        
+        if obj.status == 'PROGRESS':
+            stop_url = reverse('admin:scraper_scrapingtask_stop', args=[obj.id])
+            buttons.append(
+                format_html(
+                    '<a href="{}" class="button" style="background-color: #dc3545; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px;">Stop</a>',
+                    stop_url
+                )
+            )
+        
+        if obj.status in ['PENDING', 'PROGRESS']:
+            progress_url = reverse('admin:scraper_scrapingtask_progress', args=[obj.id])
+            buttons.append(
+                format_html(
+                    '<a href="{}" class="button" style="background-color: #17a2b8; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px; margin-left: 5px;">Progress</a>',
+                    progress_url
+                )
+            )
+        
+        return format_html(' '.join(buttons)) if buttons else "No actions"
+    action_buttons.short_description = "Actions"
+    
+    def start_new_task(self, request, queryset):
+        """Admin action to start a new task."""
+        return redirect('admin:scraper_scrapingtask_start')
+    start_new_task.short_description = "Start new scraping task"
+    
+    def start_animal_keywords_task(self, request, queryset):
+        """Admin action to start the default animal keywords task."""
+        try:
+            # Check if there are any running tasks
+            running_tasks = ScrapingTask.objects.filter(status__in=['PENDING', 'PROGRESS'])
+            if running_tasks.exists():
+                messages.warning(request, f'There are {running_tasks.count()} task(s) already running. Please wait for them to complete or stop them first.')
+                return redirect('admin:scraper_scrapingtask_changelist')
+            
+            # Default animal keywords
+            keywords = [
+                "bovin",
+                "porcin", 
+                "volaille",
+                "poules",
+                "pondeuses",
+                "poulets"
+            ]
+            
+            # Create task record
+            task = ScrapingTask.objects.create(
+                keywords=keywords,
+                output_format='pretty'
+            )
+            
+            # Start Celery task
+            celery_task = scrape_animal_keywords_enhanced_task.delay(
+                task_id=task.id,
+                keywords=keywords,
+                output_format='pretty'
+            )
+            
+            # Update task record with Celery task ID
+            task.task_id = celery_task.id
+            task.started_at = timezone.now()
+            task.save()
+            
+            messages.success(request, f'🐄 Animal keywords scraping task started! Task ID: {task.id}')
+            messages.info(request, f'Keywords: {", ".join(keywords)}')
+            messages.info(request, 'You can monitor the progress in the task list below.')
+            return redirect('admin:scraper_scrapingtask_changelist')
+            
+        except Exception as e:
+            messages.error(request, f'Failed to start animal keywords task: {str(e)}')
+            return redirect('admin:scraper_scrapingtask_changelist')
+    start_animal_keywords_task.short_description = "🐄 Start Animal Keywords Scraping"
+    
+    def has_add_permission(self, request):
+        """Allow adding tasks manually."""
+        return True
+    
+    def has_change_permission(self, request, obj=None):
+        """Allow editing tasks."""
+        return True
+    
+    def has_delete_permission(self, request, obj=None):
+        """Allow deleting tasks."""
+        return True
+
+
+@admin.register(ScrapingTaskResult)
+class ScrapingTaskResultAdmin(admin.ModelAdmin):
+    """Admin interface for ScrapingTaskResult model."""
+    
+    list_display = [
+        'task_name',
+        'prefecture_name',
+        'region_name',
+        'keyword',
+        'items_found',
+        'created_at'
+    ]
+    
+    list_filter = [
+        'task__name',
+        'prefecture_name',
+        'region_name',
+        'keyword',
+        'created_at',
+    ]
+    
+    search_fields = [
+        'task__name',
+        'prefecture_name',
+        'region_name',
+        'keyword',
+    ]
+    
+    readonly_fields = [
+        'task',
+        'prefecture_name',
+        'region_name',
+        'keyword',
+        'items_found',
+        'created_at'
+    ]
+    
+    fieldsets = (
+        ('Result Information', {
+            'fields': ('task', 'prefecture_name', 'region_name', 'keyword', 'items_found')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at',),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    list_per_page = 25
+    ordering = ['-items_found', 'prefecture_name', 'keyword']
+    
+    def task_name(self, obj):
+        """Display task name."""
+        return obj.task.name
+    task_name.short_description = "Task"
+    task_name.admin_order_field = "task__name"
+    
+    def has_add_permission(self, request):
+        """Prevent manual addition of results."""
+        return False
+    
+    def has_change_permission(self, request, obj=None):
+        """Prevent editing results."""
+        return False
+    
+    def has_delete_permission(self, request, obj=None):
+        """Allow deleting results."""
         return True

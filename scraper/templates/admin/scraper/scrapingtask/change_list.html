@@ -1,0 +1,123 @@
+{% extends "admin/change_list.html" %}
+{% load i18n admin_urls static admin_modify %}
+
+{% block object-tools-items %}
+    {{ block.super }}
+    <li>
+        <a href="{% url 'admin:scraper_scrapingtask_start' %}" class="addlink" style="background-color: #28a745; color: white; padding: 8px 16px; border-radius: 4px; text-decoration: none; font-weight: bold;">
+            🚀 Start New Task
+        </a>
+    </li>
+    <li>
+        <form method="post" action="{% url 'admin:scraper_scrapingtask_changelist' %}" style="display: inline;">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="start_animal_keywords_task">
+            <input type="hidden" name="select_across" value="0">
+            <button type="submit" style="background-color: #007bff; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; margin-left: 10px;">
+                🐄 Start Animal Keywords Scraping
+            </button>
+        </form>
+    </li>
+{% endblock %}
+
+{% block content %}
+    <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 15px; margin-bottom: 20px;">
+        <h3 style="margin-top: 0; color: #495057;">🚀 Quick Launch</h3>
+        <p style="margin-bottom: 10px; color: #6c757d;">Start scraping tasks directly from the admin interface:</p>
+        
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <a href="{% url 'admin:scraper_scrapingtask_start' %}" 
+               style="background-color: #28a745; color: white; padding: 10px 20px; border-radius: 4px; text-decoration: none; font-weight: bold; display: inline-block;">
+                ⚙️ Custom Task
+            </a>
+            
+            <a href="{% url 'admin:scraper_scrapingtask_start_animal' %}" 
+               style="background-color: #007bff; color: white; padding: 10px 20px; border-radius: 4px; text-decoration: none; font-weight: bold; display: inline-block;">
+                🐄 Animal Keywords (Default)
+            </a>
+            
+            <a href="{% url 'admin:scraper_scrapingtaskresult_changelist' %}" 
+               style="background-color: #6c757d; color: white; padding: 10px 20px; border-radius: 4px; text-decoration: none; font-weight: bold; display: inline-block;">
+                📊 View Results
+            </a>
+        </div>
+        
+        <div style="margin-top: 15px; padding: 10px; background-color: #e9ecef; border-radius: 4px; font-size: 14px;">
+            <strong>💡 Quick Tips:</strong>
+            <ul style="margin: 5px 0 0 20px;">
+                <li><strong>Custom Task:</strong> Configure keywords, regions, and output settings</li>
+                <li><strong>Animal Keywords:</strong> Uses default livestock keywords (bovin, porcin, volaille, etc.)</li>
+                <li><strong>Monitor Progress:</strong> Watch real-time progress bars and status updates</li>
+                <li><strong>Stop Tasks:</strong> Use the "Stop" button for running tasks</li>
+            </ul>
+        </div>
+    </div>
+    
+    {{ block.super }}
+{% endblock %}
+
+<style>
+.addlink:hover {
+    background-color: #218838 !important;
+    color: white !important;
+}
+
+button:hover {
+    opacity: 0.9;
+}
+
+.quick-launch-section {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.quick-launch-section h3 {
+    color: white;
+    margin-top: 0;
+}
+
+.quick-launch-buttons {
+    display: flex;
+    gap: 15px;
+    flex-wrap: wrap;
+    margin-top: 15px;
+}
+
+.quick-launch-buttons a,
+.quick-launch-buttons button {
+    padding: 12px 24px;
+    border-radius: 6px;
+    text-decoration: none;
+    font-weight: bold;
+    transition: all 0.3s ease;
+    border: none;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.quick-launch-buttons a:hover,
+.quick-launch-buttons button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+
+.tips-section {
+    background-color: rgba(255,255,255,0.1);
+    border-radius: 6px;
+    padding: 15px;
+    margin-top: 15px;
+}
+
+.tips-section ul {
+    margin: 10px 0 0 20px;
+}
+
+.tips-section li {
+    margin-bottom: 5px;
+}
+</style>
