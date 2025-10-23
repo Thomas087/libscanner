@@ -396,18 +396,31 @@ def extract_text_from_pdf(pdf_url: str) -> str:
             doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
             texts: List[str] = []
             for i in range(doc.page_count):
-                texts.append(doc[i].get_text())
+                try:
+                    texts.append(doc[i].get_text())
+                except Exception as page_error:
+                    logger.debug(f"Error extracting page {i} from {pdf_url}: {page_error}")
+                    # Continue with other pages even if one fails
+                    continue
             doc.close()
             return "\n".join(texts)
         except Exception as fitz_error:
-            logger.debug(f"PyMuPDF failed for {pdf_url}, fallback to PyPDF2: {fitz_error}")
+            logger.warning(f"PyMuPDF failed for {pdf_url}, fallback to PyPDF2: {fitz_error}")
             pdf_file.seek(0)
-            reader = PyPDF2.PdfReader(pdf_file)
-            texts: List[str] = []
-            for i in range(len(reader.pages)):
-                page = reader.pages[i]
-                texts.append(page.extract_text() or "")
-            return "\n".join(texts)
+            try:
+                reader = PyPDF2.PdfReader(pdf_file)
+                texts: List[str] = []
+                for i in range(len(reader.pages)):
+                    try:
+                        page = reader.pages[i]
+                        texts.append(page.extract_text() or "")
+                    except Exception as page_error:
+                        logger.debug(f"Error extracting page {i} with PyPDF2: {page_error}")
+                        continue
+                return "\n".join(texts)
+            except Exception as pypdf_error:
+                logger.error(f"Both PyMuPDF and PyPDF2 failed for {pdf_url}: {pypdf_error}")
+                return ""
 
     except Exception as e:
         logger.error(f"Error extracting text from PDF {pdf_url}: {e}")
