@@ -13,9 +13,14 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         self.stdout.write("Testing Redis connection...")
         
-        # Get Redis URL
+        # Check environment variables
+        self.stdout.write("Environment variables:")
+        self.stdout.write(f"  REDIS_URL: {os.environ.get('REDIS_URL', 'NOT SET')}")
+        self.stdout.write(f"  CELERY_BROKER_URL: {os.environ.get('CELERY_BROKER_URL', 'NOT SET')}")
+        
+        # Get Redis URL from settings
         redis_url = getattr(settings, 'REDIS_URL', os.environ.get('REDIS_URL', 'redis://localhost:6379/0'))
-        self.stdout.write(f"Redis URL: {redis_url}")
+        self.stdout.write(f"Settings REDIS_URL: {redis_url}")
         
         try:
             # Test Redis connection using proper Heroku method

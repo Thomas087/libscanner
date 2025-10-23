@@ -13,8 +13,9 @@ def get_redis_connection():
     Create a Redis connection using the proper Heroku Redis URL parsing.
     Based on: https://devcenter.heroku.com/articles/heroku-redis#connecting-in-python
     """
-    # Get Redis URL from environment (Heroku sets REDIS_URL automatically)
-    redis_url = os.environ.get('REDIS_URL')
+    # Get Redis URL from Django settings (which handles Heroku URL parsing)
+    from django.conf import settings
+    redis_url = getattr(settings, 'REDIS_URL', os.environ.get('REDIS_URL'))
     
     if not redis_url:
         # Fallback for local development
@@ -23,6 +24,12 @@ def get_redis_connection():
     try:
         # Parse the URL using urllib.parse (Python 3 equivalent of urlparse)
         parsed_url = urllib.parse.urlparse(redis_url)
+        
+        # Debug information
+        print(f"DEBUG: Redis URL: {redis_url}")
+        print(f"DEBUG: Parsed hostname: {parsed_url.hostname}")
+        print(f"DEBUG: Parsed port: {parsed_url.port}")
+        print(f"DEBUG: Has password: {bool(parsed_url.password)}")
         
         # Create Redis connection with parsed components
         # This is the exact method from the Heroku documentation
