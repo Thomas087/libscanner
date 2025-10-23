@@ -10,8 +10,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         self.stdout.write('Starting cleanup of documents with negative keywords...')
+        self.stdout.write('This will remove ALL documents containing negative keywords, regardless of age.')
         
-        removed_count = remove_documents_with_negative_keywords()
+        removed_count = remove_documents_with_negative_keywords(days=None)
         
         if removed_count > 0:
             self.stdout.write(

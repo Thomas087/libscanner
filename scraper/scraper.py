@@ -724,21 +724,32 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
     return saved
 
 
-def remove_documents_with_negative_keywords(days: int = CONFIG.cleanup_window_days) -> int:
+def remove_documents_with_negative_keywords(days: int = None) -> int:
     """
     Remove documents containing negative keywords.
+    If days is None, removes ALL documents regardless of age.
+    If days is specified, only removes documents from the last N days.
     Uses iterator() for streaming and bulk delete for efficiency.
     """
     try:
-        cutoff = timezone.now() - timedelta(days=days)
-
         # Collect IDs to delete in batches
         to_delete_ids = []
         total_removed = 0
         batch_size = CONFIG.db_batch_size
 
+        # Determine the queryset based on days parameter
+        if days is None:
+            # Remove ALL documents regardless of age
+            queryset = GovernmentDocument.objects.all()
+            logger.info("Removing ALL documents containing negative keywords (no age limit)")
+        else:
+            # Remove only documents from the last N days
+            cutoff = timezone.now() - timedelta(days=days)
+            queryset = GovernmentDocument.objects.filter(date_updated__gte=cutoff)
+            logger.info(f"Removing documents containing negative keywords from the last {days} days")
+
         # Use iterator() to stream results without loading all into memory
-        for d in GovernmentDocument.objects.filter(date_updated__gte=cutoff).iterator(chunk_size=batch_size):
+        for d in queryset.iterator(chunk_size=batch_size):
             if contains_negative_keywords(d.title, d.description or ""):
                 to_delete_ids.append(d.id)
 

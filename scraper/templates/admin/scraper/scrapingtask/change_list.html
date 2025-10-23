@@ -2,105 +2,86 @@
 {% load i18n admin_urls static admin_modify %}
 
 {% block object-tools-items %}
-    {{ block.super }}
-    <li>
-        <a href="{% url 'admin:scraper_scrapingtask_start_animal' %}" style="background-color: #007bff; color: white; padding: 8px 16px; border-radius: 4px; text-decoration: none; font-weight: bold; background-image: none !important; padding-left: 16px !important;">
-            Scrape Animal Keywords
-        </a>
-    </li>
+    <!-- Hide the default add button since we have it in the header -->
 {% endblock %}
 
 {% block content %}
-    <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 15px; margin-bottom: 20px;">
-        <h3 style="margin-top: 0; color: #495057;">Quick Info</h3>
-
-        <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px;">
-            <a href="{% url 'admin:scraper_scrapingtaskresult_changelist' %}"
-               style="background-color: #6c757d; color: white; padding: 10px 20px; border-radius: 4px; text-decoration: none; font-weight: bold; display: inline-block;">
-                View Results
-            </a>
-        </div>
-
-        <div style="padding: 10px; background-color: #e9ecef; border-radius: 4px; font-size: 14px;">
-            <strong>Quick Tips:</strong>
-            <ul style="margin: 5px 0 0 20px;">
-                <li><strong>Scrape Animal Keywords:</strong> Click the button in the toolbar above to start scraping with default livestock keywords (bovin, porcin, volaille, poules, pondeuses, poulets)</li>
-                <li><strong>Monitor Progress:</strong> Watch real-time progress bars and status updates in the task list below</li>
-                <li><strong>Stop Tasks:</strong> Select running tasks and use "Force Stop Selected Tasks" from the actions menu if needed</li>
-            </ul>
+    <!-- Header Section with Action Buttons -->
+    <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+            <div>
+                <h2 style="margin: 0 0 8px 0; color: #495057; font-size: 24px; font-weight: 600;">
+                    Scraping Tasks Management
+                </h2>
+                <p style="margin: 0; color: #6c757d; font-size: 14px;">
+                    Monitor and manage document scraping operations
+                </p>
+            </div>
+            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                <a href="{% url 'admin:scraper_scrapingtask_start_animal' %}" 
+                   class="action-btn start-btn"
+                   style="background-color: #007bff; color: white; padding: 12px 20px; border-radius: 4px; text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; transition: all 0.2s ease; border: 1px solid #007bff;">
+                    Start Scraping
+                </a>
+                <a href="{% url 'admin:scraper_scrapingtaskresult_changelist' %}"
+                   class="action-btn results-btn"
+                   style="background-color: #6c757d; color: white; padding: 12px 20px; border-radius: 4px; text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; transition: all 0.2s ease; border: 1px solid #6c757d;">
+                    View Results
+                </a>
+            </div>
         </div>
     </div>
+
 
     {{ block.super }}
 {% endblock %}
 
 <style>
-/* Hide the default action dropdown bar */
-.actions {
-    display: none !important;
+/* Flat button styles */
+.action-btn {
+    transition: all 0.2s ease !important;
 }
 
-.addlink:hover {
-    background-color: #218838 !important;
-    color: white !important;
+.action-btn:hover {
+    opacity: 0.9 !important;
+    transform: none !important;
+    box-shadow: none !important;
 }
 
-button:hover {
-    opacity: 0.9;
+.start-btn:hover {
+    background-color: #0056b3 !important;
+    border-color: #0056b3 !important;
 }
 
-.quick-launch-section {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    border-radius: 8px;
-    padding: 20px;
-    margin-bottom: 20px;
+.results-btn:hover {
+    background-color: #545b62 !important;
+    border-color: #545b62 !important;
 }
 
-.quick-launch-section h3 {
-    color: white;
-    margin-top: 0;
+/* Responsive design */
+@media (max-width: 768px) {
+    .action-btn {
+        padding: 10px 16px !important;
+        font-size: 14px !important;
+    }
 }
 
-.quick-launch-buttons {
-    display: flex;
-    gap: 15px;
-    flex-wrap: wrap;
-    margin-top: 15px;
+/* Custom scrollbar for better UX */
+::-webkit-scrollbar {
+    width: 8px;
 }
 
-.quick-launch-buttons a,
-.quick-launch-buttons button {
-    padding: 12px 24px;
-    border-radius: 6px;
-    text-decoration: none;
-    font-weight: bold;
-    transition: all 0.3s ease;
-    border: none;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
 }
 
-.quick-launch-buttons a:hover,
-.quick-launch-buttons button:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 4px;
 }
 
-.tips-section {
-    background-color: rgba(255,255,255,0.1);
-    border-radius: 6px;
-    padding: 15px;
-    margin-top: 15px;
-}
-
-.tips-section ul {
-    margin: 10px 0 0 20px;
-}
-
-.tips-section li {
-    margin-bottom: 5px;
+::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
 }
 </style>

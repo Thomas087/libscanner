@@ -5,7 +5,6 @@ from django.shortcuts import redirect
 from django.contrib import messages
 from django.http import JsonResponse
 from django.utils import timezone
-from celery import current_app
 from .models import GovernmentDocument, NegativeKeyword, ScrapingTask, ScrapingTaskResult
 from .tasks import scrape_animal_keywords_enhanced_task
 
@@ -169,6 +168,48 @@ class NegativeKeywordAdmin(admin.ModelAdmin):
     
     list_per_page = 25
     ordering = ['keyword']
+    
+    def get_urls(self):
+        """Add custom URLs for cleanup action."""
+        urls = super().get_urls()
+        custom_urls = [
+            path('cleanup-documents/', self.admin_site.admin_view(self.cleanup_documents_view), name='scraper_negativekeyword_cleanup'),
+        ]
+        return custom_urls + urls
+    
+    def cleanup_documents_view(self, request):
+        """View to clean up documents containing negative keywords."""
+        try:
+            from .scraper import remove_documents_with_negative_keywords
+            
+            # Get the number of documents before cleanup
+            from .models import GovernmentDocument
+            total_docs_before = GovernmentDocument.objects.count()
+            
+            # Run the cleanup (removes ALL documents with negative keywords, regardless of age)
+            removed_count = remove_documents_with_negative_keywords(days=None)
+            
+            # Get the number of documents after cleanup
+            total_docs_after = GovernmentDocument.objects.count()
+            
+            if removed_count > 0:
+                messages.success(request, f'Successfully removed {removed_count} documents containing negative keywords.')
+                messages.info(request, f'Database now contains {total_docs_after} documents (was {total_docs_before}).')
+                messages.warning(request, 'All documents containing negative keywords have been removed, regardless of their age.')
+            else:
+                messages.info(request, 'No documents containing negative keywords were found.')
+            
+            return redirect('admin:scraper_negativekeyword_changelist')
+            
+        except Exception as e:
+            messages.error(request, f'Failed to cleanup documents: {str(e)}')
+            return redirect('admin:scraper_negativekeyword_changelist')
+    
+    def changelist_view(self, request, extra_context=None):
+        """Override changelist to add custom context for the cleanup button."""
+        extra_context = extra_context or {}
+        extra_context['show_cleanup_button'] = True
+        return super().changelist_view(request, extra_context=extra_context)
     
     def get_queryset(self, request):
         """Optimize queryset for admin."""
@@ -546,7 +587,7 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
                         stopped_count += 1
                     else:
                         failed_count += 1
-                except Exception as e:
+                except Exception:
                     failed_count += 1
             else:
                 # Task is not running, skip it

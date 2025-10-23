@@ -1,0 +1,116 @@
+{% extends "admin/change_list.html" %}
+{% load i18n admin_urls static admin_modify %}
+
+{% block object-tools-items %}
+    <!-- Hide the default add button since we have it in the header -->
+{% endblock %}
+
+{% block content %}
+    <!-- Header Section with Action Buttons -->
+    <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+            <div>
+                <h2 style="margin: 0 0 8px 0; color: #495057; font-size: 24px; font-weight: 600;">
+                    Negative Keywords Management
+                </h2>
+                <p style="margin: 0; color: #6c757d; font-size: 14px;">
+                    Filter out irrelevant documents by managing negative keywords
+                </p>
+            </div>
+            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                <a href="{% url 'admin:scraper_negativekeyword_add' %}" 
+                   class="action-btn add-btn"
+                   style="background-color: #28a745; color: white; padding: 12px 20px; border-radius: 4px; text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; transition: all 0.2s ease; border: 1px solid #28a745;">
+                    Add Keyword
+                </a>
+                <a href="{% url 'admin:scraper_negativekeyword_cleanup' %}"
+                   class="action-btn cleanup-btn"
+                   style="background-color: #dc3545; color: white; padding: 12px 20px; border-radius: 4px; text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; transition: all 0.2s ease; border: 1px solid #dc3545;"
+                   onclick="return confirm('⚠️ WARNING: This will permanently remove ALL documents containing negative keywords from the database. This action cannot be undone.\\n\\nAre you sure you want to continue?');">
+                    Clean Documents
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Warning Section -->
+    <div style="background-color: #fff5f5; border: 1px solid #feb2b2; border-radius: 4px; padding: 16px; margin-bottom: 20px;">
+        <div style="display: flex; align-items: flex-start; gap: 12px;">
+            <div style="width: 20px; height: 20px; background-color: #e53e3e; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 12px; font-weight: bold; flex-shrink: 0;">!</div>
+            <div>
+                <strong style="color: #c53030; font-size: 14px;">Important Warning</strong>
+                <p style="margin: 4px 0 0 0; color: #742a2a; font-size: 13px; line-height: 1.4;">
+                    The "Clean Documents" operation will <strong>permanently remove ALL documents</strong> from the database that contain any of the negative keywords listed below. This action cannot be undone and will affect documents of all ages.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    {{ block.super }}
+{% endblock %}
+
+<style>
+/* Flat button styles */
+.action-btn {
+    transition: all 0.2s ease !important;
+}
+
+.action-btn:hover {
+    opacity: 0.9 !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+.add-btn:hover {
+    background-color: #218838 !important;
+    border-color: #218838 !important;
+}
+
+.cleanup-btn:hover {
+    background-color: #c82333 !important;
+    border-color: #c82333 !important;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .action-btn {
+        padding: 10px 16px !important;
+        font-size: 14px !important;
+    }
+}
+
+/* Improve the default admin styling */
+.addlink {
+    background-color: #28a745 !important;
+    color: white !important;
+    border-radius: 4px !important;
+    transition: all 0.2s ease !important;
+    border: 1px solid #28a745 !important;
+}
+
+.addlink:hover {
+    background-color: #218838 !important;
+    border-color: #218838 !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+/* Custom scrollbar for better UX */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
+}
+</style>
