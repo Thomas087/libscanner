@@ -4,29 +4,34 @@
 {% block object-tools-items %}
     {{ block.super }}
     <li>
-        <a href="{% url 'admin:scraper_scrapingtask_start' %}" class="addlink">
-            🚀 Start New Task
+        <a href="{% url 'admin:scraper_scrapingtask_start_animal' %}" class="addlink" style="background-image: none !important; padding-left: 10px !important;">
+            Scrape Animal Keywords
         </a>
     </li>
 {% endblock %}
 
 {% block content %}
     <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 15px; margin-bottom: 20px;">
-        <h3 style="margin-top: 0; color: #495057;">🚀 Quick Launch</h3>
-        <p style="margin-bottom: 10px; color: #6c757d;">Start scraping tasks directly from the admin interface:</p>
-        
+        <h3 style="margin-top: 0; color: #495057;">Quick Info</h3>
+
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <a href="{% url 'admin:scraper_scrapingtask_start' %}" 
-               style="background-color: #28a745; color: white; padding: 10px 20px; border-radius: 4px; text-decoration: none; font-weight: bold; display: inline-block;">
-                ⚙️ Custom Task
-            </a>
-            
-            <a href="{% url 'admin:scraper_scrapingtaskresult_changelist' %}" 
+            <a href="{% url 'admin:scraper_scrapingtaskresult_changelist' %}"
                style="background-color: #6c757d; color: white; padding: 10px 20px; border-radius: 4px; text-decoration: none; font-weight: bold; display: inline-block;">
-                📊 View Results
+                View Results
             </a>
         </div>
+
+        <p style="margin-top: 15px; color: #6c757d; font-size: 14px;">
+            <strong>Tip:</strong> Use the "Scrape Animal Keywords" button in the toolbar above to start scraping.
+        </p>
     </div>
-    
+
     {{ block.super }}
 {% endblock %}
+
+<style>
+/* Hide the default action dropdown bar */
+.actions {
+    display: none !important;
+}
+</style>

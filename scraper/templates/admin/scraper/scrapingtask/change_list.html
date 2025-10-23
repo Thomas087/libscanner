@@ -4,59 +4,42 @@
 {% block object-tools-items %}
     {{ block.super }}
     <li>
-        <a href="{% url 'admin:scraper_scrapingtask_start' %}" class="addlink" style="background-color: #28a745; color: white; padding: 8px 16px; border-radius: 4px; text-decoration: none; font-weight: bold;">
-            🚀 Start New Task
+        <a href="{% url 'admin:scraper_scrapingtask_start_animal' %}" style="background-color: #007bff; color: white; padding: 8px 16px; border-radius: 4px; text-decoration: none; font-weight: bold; background-image: none !important; padding-left: 16px !important;">
+            Scrape Animal Keywords
         </a>
-    </li>
-    <li>
-        <form method="post" action="{% url 'admin:scraper_scrapingtask_changelist' %}" style="display: inline;">
-            {% csrf_token %}
-            <input type="hidden" name="action" value="start_animal_keywords_task">
-            <input type="hidden" name="select_across" value="0">
-            <button type="submit" style="background-color: #007bff; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; margin-left: 10px;">
-                🐄 Start Animal Keywords Scraping
-            </button>
-        </form>
     </li>
 {% endblock %}
 
 {% block content %}
     <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 15px; margin-bottom: 20px;">
-        <h3 style="margin-top: 0; color: #495057;">🚀 Quick Launch</h3>
-        <p style="margin-bottom: 10px; color: #6c757d;">Start scraping tasks directly from the admin interface:</p>
-        
-        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <a href="{% url 'admin:scraper_scrapingtask_start' %}" 
-               style="background-color: #28a745; color: white; padding: 10px 20px; border-radius: 4px; text-decoration: none; font-weight: bold; display: inline-block;">
-                ⚙️ Custom Task
-            </a>
-            
-            <a href="{% url 'admin:scraper_scrapingtask_start_animal' %}" 
-               style="background-color: #007bff; color: white; padding: 10px 20px; border-radius: 4px; text-decoration: none; font-weight: bold; display: inline-block;">
-                🐄 Animal Keywords (Default)
-            </a>
-            
-            <a href="{% url 'admin:scraper_scrapingtaskresult_changelist' %}" 
+        <h3 style="margin-top: 0; color: #495057;">Quick Info</h3>
+
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px;">
+            <a href="{% url 'admin:scraper_scrapingtaskresult_changelist' %}"
                style="background-color: #6c757d; color: white; padding: 10px 20px; border-radius: 4px; text-decoration: none; font-weight: bold; display: inline-block;">
-                📊 View Results
+                View Results
             </a>
         </div>
-        
-        <div style="margin-top: 15px; padding: 10px; background-color: #e9ecef; border-radius: 4px; font-size: 14px;">
-            <strong>💡 Quick Tips:</strong>
+
+        <div style="padding: 10px; background-color: #e9ecef; border-radius: 4px; font-size: 14px;">
+            <strong>Quick Tips:</strong>
             <ul style="margin: 5px 0 0 20px;">
-                <li><strong>Custom Task:</strong> Configure keywords, regions, and output settings</li>
-                <li><strong>Animal Keywords:</strong> Uses default livestock keywords (bovin, porcin, volaille, etc.)</li>
-                <li><strong>Monitor Progress:</strong> Watch real-time progress bars and status updates</li>
-                <li><strong>Stop Tasks:</strong> Use the "Stop" button for running tasks</li>
+                <li><strong>Scrape Animal Keywords:</strong> Click the button in the toolbar above to start scraping with default livestock keywords (bovin, porcin, volaille, poules, pondeuses, poulets)</li>
+                <li><strong>Monitor Progress:</strong> Watch real-time progress bars and status updates in the task list below</li>
+                <li><strong>Stop Tasks:</strong> Select running tasks and use "Force Stop Selected Tasks" from the actions menu if needed</li>
             </ul>
         </div>
     </div>
-    
+
     {{ block.super }}
 {% endblock %}
 
 <style>
+/* Hide the default action dropdown bar */
+.actions {
+    display: none !important;
+}
+
 .addlink:hover {
     background-color: #218838 !important;
     color: white !important;

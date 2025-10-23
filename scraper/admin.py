@@ -268,7 +268,14 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
     
     inlines = [ScrapingTaskResultInline]
     
-    actions = ['start_new_task', 'start_animal_keywords_task', 'force_stop_selected_tasks']
+    actions = ['start_animal_keywords_task', 'force_stop_selected_tasks']
+
+    # Don't show actions dropdown if no items are selected
+    def changelist_view(self, request, extra_context=None):
+        """Override changelist to hide the action dropdown since we have custom buttons."""
+        extra_context = extra_context or {}
+        # We keep actions for the form submission but can customize the display
+        return super().changelist_view(request, extra_context=extra_context)
     
     list_per_page = 25
     ordering = ['-created_at']
@@ -277,105 +284,54 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
         """Add custom URLs for task actions."""
         urls = super().get_urls()
         custom_urls = [
-            path('start-task/', self.admin_site.admin_view(self.start_task), name='scraper_scrapingtask_start'),
-            path('start-animal-task/', self.admin_site.admin_view(self.start_animal_task), name='scraper_scrapingtask_start_animal'),
+            path('start-animal-keywords/', self.admin_site.admin_view(self.start_animal_keywords_view), name='scraper_scrapingtask_start_animal'),
             path('stop-task/<int:task_id>/', self.admin_site.admin_view(self.stop_task), name='scraper_scrapingtask_stop'),
             path('task-progress/<int:task_id>/', self.admin_site.admin_view(self.task_progress), name='scraper_scrapingtask_progress'),
         ]
         return custom_urls + urls
-    
-    def start_task(self, request):
-        """Start a new scraping task."""
-        if request.method == 'POST':
-            try:
-                # Get parameters from request
-                keywords = request.POST.getlist('keywords')
-                region_filter = request.POST.get('region_filter', '')
-                prefecture_filter = request.POST.get('prefecture_filter', '')
-                output_file = request.POST.get('output_file', '')
-                output_format = request.POST.get('output_format', 'pretty')
-                
-                # Create task record
-                task = ScrapingTask.objects.create(
-                    keywords=keywords,
-                    region_filter=region_filter or None,
-                    prefecture_filter=prefecture_filter or None,
-                    output_file=output_file or None,
-                    output_format=output_format
-                )
-                
-                # Start Celery task
-                celery_task = scrape_animal_keywords_enhanced_task.delay(
-                    task_id=task.id,
-                    keywords=keywords,
-                    region_filter=region_filter or None,
-                    prefecture_filter=prefecture_filter or None,
-                    output_file=output_file or None,
-                    output_format=output_format
-                )
-                
-                # Update task record with Celery task ID
-                task.task_id = celery_task.id
-                task.started_at = timezone.now()
-                task.save()
-                
-                messages.success(request, f'Task started successfully! Task ID: {task.id}')
-                return redirect('admin:scraper_scrapingtask_changelist')
-                
-            except Exception as e:
-                messages.error(request, f'Failed to start task: {str(e)}')
-                return redirect('admin:scraper_scrapingtask_changelist')
-        
-        # Show start task form
-        from django.template.response import TemplateResponse
-        context = {
-            'title': 'Start New Scraping Task',
-            'has_permission': True,
-        }
-        return TemplateResponse(request, 'admin/scraper/scrapingtask/start_task.html', context)
-    
-    def start_animal_task(self, request):
-        """Start the default animal keywords task."""
+
+    def start_animal_keywords_view(self, request):
+        """View to start the default animal keywords task."""
         try:
             # Check if there are any running tasks
             running_tasks = ScrapingTask.objects.filter(status__in=['PENDING', 'PROGRESS'])
             if running_tasks.exists():
                 messages.warning(request, f'There are {running_tasks.count()} task(s) already running. Please wait for them to complete or stop them first.')
                 return redirect('admin:scraper_scrapingtask_changelist')
-            
+
             # Default animal keywords
             keywords = [
                 "bovin",
-                "porcin", 
+                "porcin",
                 "volaille",
                 "poules",
                 "pondeuses",
                 "poulets"
             ]
-            
+
             # Create task record
             task = ScrapingTask.objects.create(
                 keywords=keywords,
                 output_format='pretty'
             )
-            
+
             # Start Celery task
             celery_task = scrape_animal_keywords_enhanced_task.delay(
                 task_id=task.id,
                 keywords=keywords,
                 output_format='pretty'
             )
-            
+
             # Update task record with Celery task ID
             task.task_id = celery_task.id
             task.started_at = timezone.now()
             task.save()
-            
-            messages.success(request, f'🐄 Animal keywords scraping task started! Task ID: {task.id}')
+
+            messages.success(request, f'Animal keywords scraping task started! Task ID: {task.id}')
             messages.info(request, f'Keywords: {", ".join(keywords)}')
             messages.info(request, 'You can monitor the progress in the task list below.')
             return redirect('admin:scraper_scrapingtask_changelist')
-            
+
         except Exception as e:
             messages.error(request, f'Failed to start animal keywords task: {str(e)}')
             return redirect('admin:scraper_scrapingtask_changelist')
@@ -529,12 +485,7 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
         
         return format_html(' '.join(buttons)) if buttons else "No actions"
     action_buttons.short_description = "Actions"
-    
-    def start_new_task(self, request, queryset):
-        """Admin action to start a new task."""
-        return redirect('admin:scraper_scrapingtask_start')
-    start_new_task.short_description = "Start new scraping task"
-    
+
     def start_animal_keywords_task(self, request, queryset):
         """Admin action to start the default animal keywords task."""
         try:
@@ -580,7 +531,7 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
         except Exception as e:
             messages.error(request, f'Failed to start animal keywords task: {str(e)}')
             return redirect('admin:scraper_scrapingtask_changelist')
-    start_animal_keywords_task.short_description = "🐄 Start Animal Keywords Scraping"
+    start_animal_keywords_task.short_description = "Scrape Animal Keywords"
     
     def force_stop_selected_tasks(self, request, queryset):
         """Admin action to force stop selected tasks."""
@@ -611,8 +562,8 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
     force_stop_selected_tasks.short_description = "🛑 Force Stop Selected Tasks"
     
     def has_add_permission(self, request):
-        """Allow adding tasks manually."""
-        return True
+        """Disable adding tasks manually - use 'Scrape Animal Keywords' button instead."""
+        return False
     
     def has_change_permission(self, request, obj=None):
         """Allow editing tasks."""
