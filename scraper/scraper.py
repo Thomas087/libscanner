@@ -662,6 +662,11 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     logger.debug(f"Negative keyword found in new record, skipping: '{card.title}'")
                 continue
 
+            #skip the record if it more than 1 year old
+            if date_updated < timezone.now() - timedelta(days=365):
+                logger.debug(f"Skipping record more than 1 year old: '{card.title}' - {card.link}")
+                continue
+
             # Check if record already exists with same link AND date_updated
             if existing and existing.date_updated == date_updated:
                 # Record is identical (same link + date_updated), skip it entirely
