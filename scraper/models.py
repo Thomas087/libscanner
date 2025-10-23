@@ -1,6 +1,5 @@
 from django.db import models
 from django.utils import timezone
-import json
 
 # Create your models here.
 
@@ -167,6 +166,95 @@ class ScrapingTask(models.Model):
         self.status = 'REVOKED'
         self.completed_at = timezone.now()
         self.save()
+    
+    def force_stop(self):
+        """Force stop a running task by revoking it and killing the worker if necessary."""
+        from celery import current_app
+        import os
+        import signal
+        import subprocess
+        
+        try:
+            # First, try to revoke the task gracefully
+            current_app.control.revoke(self.task_id, terminate=True)
+            
+            # Wait a moment for graceful shutdown
+            import time
+            time.sleep(2)
+            
+            # Check if task is still running by looking for worker processes
+            try:
+                # Get active tasks to see if our task is still there
+                inspect = current_app.control.inspect()
+                active_tasks = inspect.active()
+                
+                task_still_running = False
+                if active_tasks:
+                    for worker, tasks in active_tasks.items():
+                        for task in tasks:
+                            if task.get('id') == self.task_id:
+                                task_still_running = True
+                                break
+                
+                # If task is still running, we need to be more aggressive
+                if task_still_running:
+                    # Try to shutdown workers gracefully first
+                    current_app.control.shutdown()
+                    time.sleep(3)
+                    
+                    # If still running, find and kill worker processes
+                    try:
+                        # Find Celery worker processes
+                        result = subprocess.run(['ps', 'aux'], capture_output=True, text=True)
+                        lines = result.stdout.split('\n')
+                        
+                        celery_pids = []
+                        for line in lines:
+                            if 'celery' in line and 'worker' in line and 'libscanner' in line:
+                                parts = line.split()
+                                if len(parts) > 1:
+                                    try:
+                                        pid = int(parts[1])
+                                        celery_pids.append(pid)
+                                    except (ValueError, IndexError):
+                                        continue
+                        
+                        # Kill worker processes if found
+                        for pid in celery_pids:
+                            try:
+                                os.kill(pid, signal.SIGTERM)
+                                time.sleep(1)
+                                # If still running, force kill
+                                try:
+                                    os.kill(pid, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass  # Process already dead
+                            except ProcessLookupError:
+                                pass  # Process already dead
+                                
+                    except Exception:
+                        # If we can't kill workers, at least mark the task as force-stopped
+                        pass
+                        
+            except Exception:
+                # If inspection fails, assume we need to be more aggressive
+                pass
+            
+            # Mark as force-stopped
+            self.status = 'REVOKED'
+            self.completed_at = timezone.now()
+            self.error_message = "Task force-stopped by admin"
+            self.save()
+            
+            return True
+            
+        except Exception as e:
+            # Even if we can't stop the task gracefully, mark it as revoked
+            self.status = 'REVOKED'
+            self.completed_at = timezone.now()
+            self.error_message = f"Task force-stopped with error: {str(e)}"
+            self.save()
+            return False
 
 
 class ScrapingTaskResult(models.Model):

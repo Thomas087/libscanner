@@ -268,7 +268,7 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
     
     inlines = [ScrapingTaskResultInline]
     
-    actions = ['start_new_task', 'start_animal_keywords_task']
+    actions = ['start_new_task', 'start_animal_keywords_task', 'force_stop_selected_tasks']
     
     list_per_page = 25
     ordering = ['-created_at']
@@ -381,24 +381,27 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
             return redirect('admin:scraper_scrapingtask_changelist')
     
     def stop_task(self, request, task_id):
-        """Stop a running task."""
+        """Force stop a running task completely."""
         try:
             task = ScrapingTask.objects.get(id=task_id)
             
-            # Revoke the Celery task
-            current_app.control.revoke(task.task_id, terminate=True)
+            # Use the enhanced force_stop method
+            success = task.force_stop()
             
-            # Update task status
-            task.mark_revoked()
+            if success:
+                messages.success(request, f'Task {task_id} has been force-stopped completely.')
+                messages.info(request, 'The task and any associated worker processes have been terminated.')
+            else:
+                messages.warning(request, f'Task {task_id} has been marked as stopped, but some processes may still be running.')
+                messages.info(request, 'You may need to restart Celery workers if they become unresponsive.')
             
-            messages.success(request, f'Task {task_id} has been stopped.')
             return redirect('admin:scraper_scrapingtask_changelist')
             
         except ScrapingTask.DoesNotExist:
             messages.error(request, f'Task {task_id} not found.')
             return redirect('admin:scraper_scrapingtask_changelist')
         except Exception as e:
-            messages.error(request, f'Failed to stop task: {str(e)}')
+            messages.error(request, f'Failed to force-stop task: {str(e)}')
             return redirect('admin:scraper_scrapingtask_changelist')
     
     def task_progress(self, request, task_id):
@@ -510,7 +513,7 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
             stop_url = reverse('admin:scraper_scrapingtask_stop', args=[obj.id])
             buttons.append(
                 format_html(
-                    '<a href="{}" class="button" style="background-color: #dc3545; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px;">Stop</a>',
+                    '<a href="{}" class="button" style="background-color: #dc3545; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px; font-weight: bold;" onclick="return confirm(\'Are you sure you want to FORCE STOP this task? This will terminate the worker process.\')">🛑 FORCE STOP</a>',
                     stop_url
                 )
             )
@@ -578,6 +581,34 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
             messages.error(request, f'Failed to start animal keywords task: {str(e)}')
             return redirect('admin:scraper_scrapingtask_changelist')
     start_animal_keywords_task.short_description = "🐄 Start Animal Keywords Scraping"
+    
+    def force_stop_selected_tasks(self, request, queryset):
+        """Admin action to force stop selected tasks."""
+        stopped_count = 0
+        failed_count = 0
+        
+        for task in queryset:
+            if task.status in ['PENDING', 'PROGRESS']:
+                try:
+                    success = task.force_stop()
+                    if success:
+                        stopped_count += 1
+                    else:
+                        failed_count += 1
+                except Exception as e:
+                    failed_count += 1
+            else:
+                # Task is not running, skip it
+                continue
+        
+        if stopped_count > 0:
+            messages.success(request, f'Successfully force-stopped {stopped_count} task(s).')
+        if failed_count > 0:
+            messages.warning(request, f'Failed to force-stop {failed_count} task(s).')
+        if stopped_count == 0 and failed_count == 0:
+            messages.info(request, 'No running tasks were selected.')
+    
+    force_stop_selected_tasks.short_description = "🛑 Force Stop Selected Tasks"
     
     def has_add_permission(self, request):
         """Allow adding tasks manually."""

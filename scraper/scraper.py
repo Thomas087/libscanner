@@ -1,206 +1,214 @@
 """
 Scraper module for extracting data from government websites.
+Clean, DRY, and efficient version:
+- Centralized config
+- Requester class with mounted retries (urllib3 Retry)
+- Precompiled constants/regex
+- Small parsing/url helpers
+- Dataclass for scraped cards
+- TTL caches for fetched page/PDF text
+- Declarative ICPE pipeline
+- Cross-domain PDF lookups preserved (by request)
+- DB prefetch + no-op update skips
+- Lightweight negative keyword cache
 """
 
-import requests
-from bs4 import BeautifulSoup
-from typing import List, Dict, Any
-import logging
-from datetime import datetime
-import re
-import time
-import random
-from django.utils import timezone
-from .models import GovernmentDocument, NegativeKeyword
-from .constants import get_prefecture_by_domain
+from __future__ import annotations
+
 import io
+import logging
+import os
+import random
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urljoin, urlparse
+
 import PyPDF2
 import fitz  # PyMuPDF
-from urllib.parse import urljoin
+import requests
+from bs4 import BeautifulSoup
+from django.utils import timezone
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+from .constants import get_prefecture_by_domain
+from .models import GovernmentDocument, NegativeKeyword
+
+# ------------------------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------------------------
+logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ScraperConfig:
+    max_redirects: int = 5
+    max_pdf_bytes: int = 15 * 1024 * 1024  # 15MB
+    request_timeout: int = 30
+    head_timeout: int = 15
+    max_retries: int = 3
+    icpe_pdf_cap: int = 5
+    cleanup_window_days: int = 30
+    page_step: int = 10
+    max_offset: int = 1000
+    cache_ttl_seconds: int = 600  # 10 minutes
+
+
+CONFIG = ScraperConfig()
+
+# ------------------------------------------------------------------------------
+# User-Agent handling
+# ------------------------------------------------------------------------------
 
 # Try to import fake-useragent for better user agent rotation
 try:
     from fake_useragent import UserAgent
+
     FAKE_USERAGENT_AVAILABLE = True
-except ImportError:
+except Exception:
     FAKE_USERAGENT_AVAILABLE = False
 
-logger = logging.getLogger(__name__)
+USER_AGENTS: Tuple[str, ...] = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
+)
 
-# User agents for rotation to avoid detection
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0'
-]
 
-# Session for persistent connections and cookie handling
-session = requests.Session()
-
-# Configure session with better defaults
-session.max_redirects = 5
-
-def get_random_user_agent():
-    """Get a random user agent from the list or fake-useragent library."""
+def get_random_user_agent() -> str:
     if FAKE_USERAGENT_AVAILABLE:
         try:
-            ua = UserAgent()
-            return ua.random
+            return UserAgent().random
         except Exception as e:
-            logger.warning(f"Failed to get user agent from fake-useragent: {e}")
-            return random.choice(USER_AGENTS)
-    else:
-        return random.choice(USER_AGENTS)
+            logger.debug(f"fake-useragent failed, using static list: {e}")
+    return random.choice(USER_AGENTS)
 
-def get_headers():
-    """Get realistic browser headers."""
+
+def get_headers() -> Dict[str, str]:
     return {
-        'User-Agent': get_random_user_agent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Cache-Control': 'max-age=0'
+        "User-Agent": get_random_user_agent(),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Cache-Control": "max-age=0",
     }
 
-def make_request_with_retry(url: str, max_retries: int = 3, timeout: int = 30) -> requests.Response:
-    """
-    Make a request with retry logic and exponential backoff.
-    
-    Args:
-        url (str): The URL to request
-        max_retries (int): Maximum number of retries
-        timeout (int): Request timeout in seconds
-        
-    Returns:
-        requests.Response: The response object
-        
-    Raises:
-        requests.RequestException: If all retries fail
-    """
-    for attempt in range(max_retries + 1):
+
+def configure_proxy_env() -> Dict[str, str]:
+    http_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    https_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    proxies = {}
+    if http_proxy:
+        proxies["http"] = http_proxy
+    if https_proxy:
+        proxies["https"] = https_proxy
+    return proxies
+
+
+# ------------------------------------------------------------------------------
+# Requester with mounted retries
+# ------------------------------------------------------------------------------
+
+class Requester:
+    def __init__(self, session: Optional[requests.Session] = None):
+        self.s = session or requests.Session()
+        self.s.max_redirects = CONFIG.max_redirects
+        self.mount_retries()
+        proxies = configure_proxy_env()
+        if proxies:
+            self.s.proxies.update(proxies)
+
+    def mount_retries(self) -> None:
+        retry = Retry(
+            total=CONFIG.max_retries,
+            backoff_factor=1.0,  # exponential-ish backoff via urllib3
+            status_forcelist=[408, 429, 500, 502, 503, 504],
+            allowed_methods=["GET", "HEAD"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+        self.s.mount("http://", adapter)
+        self.s.mount("https://", adapter)
+
+    def update_headers(self) -> None:
+        self.s.headers.update(get_headers())
+
+    def get(self, url: str, timeout: Optional[int] = None) -> requests.Response:
+        # brief jitter even on first attempt to avoid bursty patterns
+        time.sleep(random.uniform(0.3, 1.2))
+        self.update_headers()
+        resp = self.s.get(url, timeout=timeout or CONFIG.request_timeout)
+        # If urllib3 didn't raise, explicitly raise for non-2xx so caller can decide
+        resp.raise_for_status()
+        return resp
+
+    def head(self, url: str, timeout: Optional[int] = None) -> requests.Response:
+        self.update_headers()
+        return self.s.head(url, allow_redirects=True, timeout=timeout or CONFIG.head_timeout)
+
+    def reset(self) -> None:
         try:
-            # Add random delay between requests to avoid rate limiting
-            if attempt > 0:
-                delay = random.uniform(1, 3) * (2 ** attempt)  # Exponential backoff
-                logger.info(f"Waiting {delay:.2f} seconds before retry {attempt}")
-                time.sleep(delay)
-            else:
-                # Random delay even for first attempt to avoid detection
-                delay = get_request_delay()
-                time.sleep(delay)
-            
-            # Update headers with new user agent for each attempt
-            session.headers.update(get_headers())
-            
-            logger.info(f"Making request to {url} (attempt {attempt + 1}/{max_retries + 1})")
-            response = session.get(url, timeout=timeout)
-            response.raise_for_status()
-            
-            logger.info(f"Request successful - Status: {response.status_code}")
-            return response
-            
-        except requests.exceptions.Timeout:
-            logger.warning(f"Timeout on attempt {attempt + 1} for {url}")
-            if attempt == max_retries:
-                raise
-        except requests.exceptions.ConnectionError:
-            logger.warning(f"Connection error on attempt {attempt + 1} for {url}")
-            if attempt == max_retries:
-                raise
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 429:  # Rate limited
-                logger.warning(f"Rate limited on attempt {attempt + 1} for {url}")
-                if attempt == max_retries:
-                    raise
-                # Wait longer for rate limit
-                time.sleep(random.uniform(5, 10))
-            else:
-                logger.error(f"HTTP error {e.response.status_code} on attempt {attempt + 1} for {url}")
-                raise
-        except Exception as e:
-            logger.error(f"Unexpected error on attempt {attempt + 1} for {url}: {e}")
-            if attempt == max_retries:
-                raise
-    
-    raise requests.RequestException(f"All {max_retries + 1} attempts failed for {url}")
-
-def throttle_request():
-    """Add random delay between requests to avoid being blocked."""
-    delay = random.uniform(1, 3)  # Random delay between 1-3 seconds
-    logger.debug(f"Throttling request for {delay:.2f} seconds")
-    time.sleep(delay)
-
-def configure_proxy():
-    """Configure proxy settings if available."""
-    import os
-    
-    # Check for proxy environment variables
-    http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
-    https_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
-    
-    if http_proxy or https_proxy:
-        proxies = {
-            'http': http_proxy,
-            'https': https_proxy
-        }
-        session.proxies.update(proxies)
-        logger.info(f"Configured proxies: {proxies}")
-    else:
-        logger.debug("No proxy configuration found")
-
-def reset_session():
-    """Reset the session to clear cookies and start fresh."""
-    global session
-    session.close()
-    session = requests.Session()
-    session.max_redirects = 5
-    configure_proxy()
-    logger.info("Session reset completed")
-
-def get_request_delay():
-    """Get a random delay for requests to avoid detection."""
-    return random.uniform(0.5, 2.5)
-
-def initialize_scraper():
-    """Initialize the scraper with proper configuration."""
-    configure_proxy()
-    session.headers.update(get_headers())
-    logger.info("Scraper initialized with anti-detection measures")
+            self.s.close()
+        except Exception:
+            pass
+        self.__init__(None)  # re-init fresh session
 
 
-def contains_icpe_keywords(text: str) -> bool:
-    """
-    Check if the text contains ICPE-related keywords.
+# Single module-level requester (can be swapped in tests)
+_requester = Requester()
 
-    Args:
-        text (str): The text to check for ICPE keywords
+# ------------------------------------------------------------------------------
+# TTL cache decorator (simple, dependency-free)
+# ------------------------------------------------------------------------------
 
-    Returns:
-        bool: True if ICPE keywords are found, False otherwise
-    """
-    if not text:
-        logger.debug("No text provided for ICPE keyword check")
-        return False
+def ttl_cache(seconds: int = CONFIG.cache_ttl_seconds, maxsize: int = 1024):
+    def deco(fn):
+        cache: Dict[Any, Tuple[float, Any]] = {}
+        order: List[Any] = []
 
-    # Convert to lowercase for case-insensitive matching
-    text_lower = text.lower()
-    logger.debug(
-        f"Checking ICPE keywords in text (length: {len(text_lower)} characters)"
-    )
+        def wrapper(*args):
+            now = time.time()
+            key = args
+            hit = cache.get(key)
+            if hit is not None and now - hit[0] < seconds:
+                return hit[1]
+            value = fn(*args)
+            cache[key] = (now, value)
+            order.append(key)
+            if len(order) > maxsize:
+                oldest = order.pop(0)
+                cache.pop(oldest, None)
+            return value
 
-    # Check for ICPE-related keywords
-    icpe_keywords = [
+        wrapper.cache_clear = lambda: (cache.clear(), order.clear())
+        return wrapper
+
+    return deco
+
+
+# ------------------------------------------------------------------------------
+# Precompiled constants & regex
+# ------------------------------------------------------------------------------
+
+ICPE_KEYWORDS: Tuple[str, ...] = tuple(
+    kw.lower()
+    for kw in (
         "icpe",
         "installations classées",
         "installation classée",
@@ -214,735 +222,479 @@ def contains_icpe_keywords(text: str) -> bool:
         "code de l'environnement",
         "déclaration initiale dicpe",
         "dicpe",
-    ]
+    )
+)
 
-    for keyword in icpe_keywords:
-        if keyword in text_lower:
-            logger.info(f"Found ICPE keyword '{keyword}' in text")
+import re
+
+DATE_PATTERNS: Tuple[re.Pattern, ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"Mis à jour le (\d{1,2})/(\d{1,2})/(\d{4})",
+        r"Publié le (\d{1,2})/(\d{1,2})/(\d{4})",
+        r"Le (\d{1,2})/(\d{1,2})/(\d{4})",
+    )
+)
+
+# ------------------------------------------------------------------------------
+# HTML parsing & URL helpers
+# ------------------------------------------------------------------------------
+
+def first_text(soup: BeautifulSoup, *selectors: str) -> str:
+    for sel in selectors:
+        el = soup.select_one(sel)
+        if el:
+            return el.get_text(strip=True)
+    return ""
+
+
+def first_attr(soup: BeautifulSoup, selector: str, attr: str) -> str:
+    el = soup.select_one(selector)
+    return el.get(attr, "") if el else ""
+
+
+def absolutize(href: str, domain: Optional[str]) -> str:
+    if not href:
+        return ""
+    if href.startswith("http"):
+        return href
+    base = f"https://www.{domain}" if domain else ""
+    return urljoin(base + "/", href)
+
+
+# ------------------------------------------------------------------------------
+# Data shape for cards
+# ------------------------------------------------------------------------------
+
+@dataclass
+class ScrapedCard:
+    title: str
+    link: str
+    description: str = ""
+    date_label: Optional[str] = None
+    metadata: Optional[Dict[str, List[str]]] = None
+    html_content: Optional[str] = None
+
+
+# ------------------------------------------------------------------------------
+# Keyword checks & date parse
+# ------------------------------------------------------------------------------
+
+def contains_icpe_keywords(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    t = text.lower()
+    return any(k in t for k in ICPE_KEYWORDS)
+
+
+def parse_date_from_detail(detail_text: str) -> datetime:
+    for pat in DATE_PATTERNS:
+        m = pat.search(detail_text or "")
+        if m:
+            day, month, year = m.groups()
+            try:
+                return datetime(
+                    int(year), int(month), int(day), tzinfo=timezone.get_current_timezone()
+                )
+            except Exception:
+                # fall through to now()
+                break
+    return timezone.now()
+
+
+# ------------------------------------------------------------------------------
+# Negative keyword caching
+# ------------------------------------------------------------------------------
+
+from functools import lru_cache
+
+
+@lru_cache(maxsize=1)
+def _negative_keywords_lower() -> List[str]:
+    try:
+        return [nk.keyword.lower() for nk in NegativeKeyword.objects.all()]
+    except Exception as e:
+        logger.error(f"Error loading negative keywords: {e}")
+        return []
+
+
+def refresh_negative_keywords_cache() -> None:
+    _negative_keywords_lower.cache_clear()
+
+
+def contains_negative_keywords(title: str, description: str) -> bool:
+    text = f"{title} {description}".lower()
+    for kw in _negative_keywords_lower():
+        if kw and kw in text:
             return True
-
-    logger.debug("No ICPE keywords found in text")
     return False
 
 
-def extract_pdf_links_from_page(url: str) -> List[str]:
-    """
-    Extract all PDF links from a webpage.
+# ------------------------------------------------------------------------------
+# Fetching & extraction (with TTL caches)
+# ------------------------------------------------------------------------------
 
-    Args:
-        url (str): The URL to check for PDF links
-
-    Returns:
-        List[str]: List of PDF URLs found on the page
-    """
+def head_pdf_ok(url: str) -> bool:
+    """HEAD probe for PDF content-type and reasonable size."""
     try:
-        # Add throttling before request
-        throttle_request()
-        
-        response = make_request_with_retry(url, max_retries=2, timeout=30)
-        soup = BeautifulSoup(response.content, "html.parser")
+        r = _requester.head(url, timeout=CONFIG.head_timeout)
+        ct = (r.headers.get("Content-Type") or "").lower()
+        cl = r.headers.get("Content-Length")
+        if "pdf" not in ct:
+            logger.debug(f"HEAD indicates non-PDF ({ct}): {url}")
+            return False
+        if cl and cl.isdigit() and int(cl) > CONFIG.max_pdf_bytes:
+            logger.info(f"Skip large PDF (HEAD Content-Length {cl} bytes): {url}")
+            return False
+        return True
+    except Exception as e:
+        # Some servers block HEAD; be permissive and rely on body-size check later
+        logger.debug(f"HEAD failed for {url}: {e}")
+        return True
 
-        pdf_links = []
-        # Find all links
-        for link in soup.find_all("a", href=True):
-            href = link["href"]
-            # Convert relative URLs to absolute
-            if not href.startswith("http"):
-                href = urljoin(url, href)
 
-            # Check if it's a PDF link
+@ttl_cache(seconds=CONFIG.cache_ttl_seconds)
+def fetch_page_text(url: str) -> str:
+    rsp = _requester.get(url, timeout=CONFIG.request_timeout)
+    return BeautifulSoup(rsp.content, "html.parser").get_text()
+
+
+def extract_pdf_links_from_page(url: str) -> List[str]:
+    """Extract all PDF links from a webpage (cross-domain allowed by request)."""
+    try:
+        rsp = _requester.get(url, timeout=CONFIG.request_timeout)
+        soup = BeautifulSoup(rsp.content, "html.parser")
+        links: List[str] = []
+        for a in soup.find_all("a", href=True):
+            href = urljoin(url, a["href"])
             if href.lower().endswith(".pdf") or "pdf" in href.lower():
-                pdf_links.append(href)
-
-        logger.info(f"Found {len(pdf_links)} PDF links on {url}")
-        return pdf_links
-
+                links.append(href)
+        logger.debug(f"Found {len(links)} PDF links on {url}")
+        return links
     except Exception as e:
         logger.error(f"Error extracting PDF links from {url}: {e}")
         return []
 
 
+@ttl_cache(seconds=CONFIG.cache_ttl_seconds)
 def extract_text_from_pdf(pdf_url: str) -> str:
-    """
-    Extract text content from a PDF file using PyMuPDF (fitz) for better performance.
-    Falls back to PyPDF2 if PyMuPDF fails.
-
-    Args:
-        pdf_url (str): The URL of the PDF file
-
-    Returns:
-        str: Extracted text content from the PDF
-    """
+    """Extract text from PDF via PyMuPDF; fallback to PyPDF2. Enforces size limits."""
     try:
-        # Add throttling before request
-        throttle_request()
-        
-        response = make_request_with_retry(pdf_url, max_retries=2, timeout=30)
+        if not head_pdf_ok(pdf_url):
+            return ""
 
-        # Create a file-like object from the PDF content
-        pdf_file = io.BytesIO(response.content)
+        resp = _requester.get(pdf_url, timeout=CONFIG.request_timeout)
+        content = resp.content or b""
+        if len(content) > CONFIG.max_pdf_bytes:
+            logger.info(f"Skip large PDF body ({len(content)} bytes): {pdf_url}")
+            return ""
 
-        # Try PyMuPDF first (much faster)
+        pdf_file = io.BytesIO(content)
+
+        # Try PyMuPDF first
         try:
             doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-            text_content = ""
-
-            for page_num in range(doc.page_count):
-                page = doc[page_num]
-                text_content += page.get_text() + "\n"
-
+            texts: List[str] = []
+            for i in range(doc.page_count):
+                texts.append(doc[i].get_text())
             doc.close()
-            logger.info(
-                f"Extracted {len(text_content)} characters from PDF using PyMuPDF: {pdf_url}"
-            )
-            return text_content
-
+            return "\n".join(texts)
         except Exception as fitz_error:
-            logger.warning(
-                f"PyMuPDF failed for {pdf_url}, falling back to PyPDF2: {fitz_error}"
-            )
-
-            # Fallback to PyPDF2
-            pdf_file.seek(0)  # Reset file pointer
-            pdf_reader = PyPDF2.PdfReader(pdf_file)
-            text_content = ""
-
-            for page_num in range(len(pdf_reader.pages)):
-                page = pdf_reader.pages[page_num]
-                text_content += page.extract_text() + "\n"
-
-            logger.info(
-                f"Extracted {len(text_content)} characters from PDF using PyPDF2 fallback: {pdf_url}"
-            )
-            return text_content
+            logger.debug(f"PyMuPDF failed for {pdf_url}, fallback to PyPDF2: {fitz_error}")
+            pdf_file.seek(0)
+            reader = PyPDF2.PdfReader(pdf_file)
+            texts: List[str] = []
+            for i in range(len(reader.pages)):
+                page = reader.pages[i]
+                texts.append(page.extract_text() or "")
+            return "\n".join(texts)
 
     except Exception as e:
         logger.error(f"Error extracting text from PDF {pdf_url}: {e}")
         return ""
 
 
+def check_page_for_icpe(url: str) -> bool:
+    try:
+        text = fetch_page_text(url)
+        return contains_icpe_keywords(text)
+    except Exception as e:
+        logger.error(f"Error checking page for ICPE at {url}: {e}")
+        return False
+
+
 def check_pdfs_for_icpe(pdf_urls: List[str]) -> bool:
-    """
-    Check if any of the PDFs contain ICPE keywords.
-
-    Args:
-        pdf_urls (List[str]): List of PDF URLs to check
-
-    Returns:
-        bool: True if any PDF contains ICPE keywords, False otherwise
-    """
-    for pdf_url in pdf_urls:
+    for u in pdf_urls:
         try:
-            logger.info(f"Checking PDF for ICPE content: {pdf_url}")
-            pdf_text = extract_text_from_pdf(pdf_url)
-
-            if pdf_text and contains_icpe_keywords(pdf_text):
-                logger.info(f"Found ICPE content in PDF: {pdf_url}")
+            text = extract_text_from_pdf(u)
+            if text and contains_icpe_keywords(text):
                 return True
-
         except Exception as e:
-            logger.error(f"Error checking PDF {pdf_url} for ICPE: {e}")
-            continue
-
+            logger.error(f"Error checking PDF {u} for ICPE: {e}")
     return False
 
 
-def check_page_for_icpe(url: str) -> bool:
-    """
-    Check if a page contains ICPE keywords by scraping the full content.
+# ------------------------------------------------------------------------------
+# ICPE pipeline (declarative)
+# ------------------------------------------------------------------------------
 
-    Args:
-        url (str): The URL to check
-
-    Returns:
-        bool: True if ICPE keywords are found on the page, False otherwise
-    """
-    try:
-        # Add throttling before request
-        throttle_request()
-        
-        response = make_request_with_retry(url, max_retries=2, timeout=30)
-        soup = BeautifulSoup(response.content, "html.parser")
-
-        # Get all text content from the page
-        page_text = soup.get_text()
-
-        # Check if page contains ICPE keywords
-        return contains_icpe_keywords(page_text)
-
-    except Exception as e:
-        logger.error(f"Error checking page for ICPE content at {url}: {e}")
+def icpe_flag_for_item(title: str, description: str, link: Optional[str], domain: Optional[str]) -> bool:
+    """Cheap -> deeper ICPE detection with short-circuits and capped PDF checks."""
+    if contains_icpe_keywords(f"{title} {description}"):
+        return True
+    if not link:
         return False
 
+    parsed = urlparse(link)
+    same_domain = bool(parsed.netloc and domain and parsed.netloc.endswith(domain))
 
-def contains_negative_keywords(title: str, description: str) -> bool:
-    """
-    Check if the title or description contains any negative keywords.
+    if same_domain and check_page_for_icpe(link):
+        return True
 
-    Args:
-        title (str): The document title
-        description (str): The document description
-
-    Returns:
-        bool: True if negative keywords are found, False otherwise
-    """
-    try:
-        # Get all negative keywords from the database
-        negative_keywords = NegativeKeyword.objects.all()
-
-        # Combine title and description for checking
-        text_to_check = f"{title} {description}".lower()
-
-        for negative_keyword in negative_keywords:
-            if negative_keyword.keyword.lower() in text_to_check:
-                logger.info(
-                    f"Document contains negative keyword '{negative_keyword.keyword}': {title}"
-                )
-                return True
-
+    pdf_links = extract_pdf_links_from_page(link)
+    if not pdf_links:
         return False
 
-    except Exception as e:
-        logger.error(f"Error checking negative keywords: {e}")
-        return False
+    # Cap to first N PDFs to avoid heavy scans
+    return check_pdfs_for_icpe(pdf_links[: CONFIG.icpe_pdf_cap])
 
 
-def remove_documents_with_negative_keywords():
-    """
-    Remove existing documents from the database that contain negative keywords.
-    This function should be called periodically to clean up the database.
+# ------------------------------------------------------------------------------
+# Card extraction
+# ------------------------------------------------------------------------------
 
-    Returns:
-        int: Number of documents removed
-    """
-    removed_count = 0
-
+def extract_card_data(card_element, domain: Optional[str] = None) -> Optional[ScrapedCard]:
     try:
-        # Get all documents
-        documents = GovernmentDocument.objects.all()
+        # Title
+        title = first_text(card_element, "h3", "h2", "h1")
+        # Link
+        href = first_attr(card_element, "a", "href")
+        link = absolutize(href, domain)
+        # Desc
+        desc = first_text(card_element, "p", ".fr-card__desc")
+        # Date label (raw)
+        date_label = first_text(card_element, "time", "span.date")
 
-        for document in documents:
-            if contains_negative_keywords(document.title, document.description or ""):
-                logger.info(
-                    f"Removing document with negative keywords: {document.title}"
-                )
-                document.delete()
-                removed_count += 1
+        # Metadata buckets (optional)
+        metadata: Dict[str, List[str]] = {}
+        for cls in ("fr-card__title", "fr-card__content", "fr-card__detail"):
+            els = card_element.find_all(class_=cls)
+            if els:
+                metadata[cls] = [el.get_text(strip=True) for el in els]
+        if not title and not link:
+            return None
 
-        logger.info(f"Removed {removed_count} documents containing negative keywords")
-
-    except Exception as e:
-        logger.error(f"Error removing documents with negative keywords: {e}")
-
-    return removed_count
-
-
-def parse_date_from_detail(detail_text: str) -> datetime:
-    """
-    Parse date from fr-card__detail field.
-    Expected format: "Mis à jour le DD/MM/YYYY"
-
-    Args:
-        detail_text (str): The detail text containing the date
-
-    Returns:
-        datetime: Parsed datetime object, or current time if parsing fails
-    """
-    logger.debug(f"Starting date parsing from detail text: '{detail_text}'")
-
-    try:
-        # Look for pattern "Mis à jour le DD/MM/YYYY"
-        date_pattern = r"Mis à jour le (\d{1,2})/(\d{1,2})/(\d{4})"
-        logger.debug(f"Using regex pattern: {date_pattern}")
-
-        match = re.search(date_pattern, detail_text)
-
-        if match:
-            day, month, year = match.groups()
-            logger.debug(f"Found date match - Day: {day}, Month: {month}, Year: {year}")
-
-            parsed_date = datetime(
-                int(year), int(month), int(day), tzinfo=timezone.get_current_timezone()
-            )
-            logger.info(
-                f"Successfully parsed date: {parsed_date.strftime('%Y-%m-%d')} from '{detail_text}'"
-            )
-            return parsed_date
-        else:
-            logger.warning(f"No date pattern found in detail text: '{detail_text}'")
-            logger.info(
-                f"Using current time as fallback: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-            return timezone.now()
-    except Exception as e:
-        logger.error(f"Error parsing date from '{detail_text}': {e}")
-        logger.info(
-            f"Using current time as fallback: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        html_content = str(card_element)
+        return ScrapedCard(
+            title=title or "",
+            link=link or "",
+            description=desc or "",
+            date_label=date_label or None,
+            metadata=metadata or None,
+            html_content=html_content,
         )
-        return timezone.now()
+    except Exception as e:
+        logger.error(f"Error extracting card data: {e}")
+        return None
 
 
-def save_to_database(scraped_data: List[Dict[str, Any]], domain: str) -> int:
+# ------------------------------------------------------------------------------
+# Persistence
+# ------------------------------------------------------------------------------
+
+def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timezone.now) -> int:
     """
-    Save scraped data to the database using GovernmentDocument model.
-
-    Args:
-        scraped_data (List[Dict[str, Any]]): List of scraped items
-        domain (str): The domain name to extract prefecture info from
-
-    Returns:
-        int: Number of items saved to database
+    Persist scraped items with minimal DB churn:
+    - Preload existing by link
+    - Skip no-op updates
+    - Negative keyword filtering
     """
-    logger.info(
-        f"Starting database save process for {len(scraped_data)} items from domain: {domain}"
-    )
-    saved_count = 0
+    if not scraped_cards:
+        return 0
 
-    # Extract prefecture info from domain
-    logger.debug(f"Extracting prefecture info for domain: {domain}")
     prefecture_info = get_prefecture_by_domain(domain)
-    prefecture_name = prefecture_info["name"] if prefecture_info else None
-    prefecture_code = prefecture_info["code"] if prefecture_info else None
+    pref_name = prefecture_info["name"] if prefecture_info else None
+    pref_code = prefecture_info["code"] if prefecture_info else None
     region_name = prefecture_info["region"] if prefecture_info else None
-    logger.info(
-        f"Prefecture info - Name: {prefecture_name}, Code: {prefecture_code}, Region: {region_name}"
-    )
 
-    for item in scraped_data:
+    links = [c.link for c in scraped_cards if c.link]
+    existing_by_link = {d.link: d for d in GovernmentDocument.objects.filter(link__in=links)}
+
+    saved = 0
+    for card in scraped_cards:
         try:
-            # Extract basic information first
-            title = item.get("title", "")
-            description = item.get("description", "")
-            link = item.get("link", "")
-
-            # Extract date from fr-card__detail metadata
-            date_updated = timezone.now()  # Default to current time
-            if "metadata" in item and "fr-card__detail" in item["metadata"]:
-                detail_text = " ".join(item["metadata"]["fr-card__detail"])
+            # Date from metadata if present
+            date_updated = now()
+            detail_text = None
+            if card.metadata and "fr-card__detail" in card.metadata:
+                detail_text = " ".join(card.metadata["fr-card__detail"])
                 date_updated = parse_date_from_detail(detail_text)
 
-            # Check if document contains negative keywords first
-            if contains_negative_keywords(title, description):
-                logger.info(f"Document contains negative keywords: {title}")
-
-                # Check if document already exists and delete it if it does
-                existing_document = GovernmentDocument.objects.filter(link=link).first()
-                if existing_document:
-                    logger.info(
-                        f"Removing existing document that now contains negative keywords: {title}"
-                    )
-                    existing_document.delete()
+            if contains_negative_keywords(card.title, card.description):
+                existing = existing_by_link.get(card.link)
+                if existing:
+                    existing.delete()
+                    existing_by_link.pop(card.link, None)
                 continue
 
-            # Check if document already exists with same link and date
-            existing_document = GovernmentDocument.objects.filter(
-                link=link, date_updated=date_updated
-            ).first()
+            is_icpe = icpe_flag_for_item(card.title, card.description, card.link, domain)
 
-            if existing_document:
-                logger.info(
-                    f"Document already exists with same link and date, skipping: {title}"
+            existing = existing_by_link.get(card.link)
+            if existing:
+                changed = (
+                    existing.title != card.title
+                    or (existing.description or "") != (card.description or "")
+                    or existing.date_updated != date_updated
+                    or existing.is_icpe != is_icpe
+                    or (pref_name and existing.prefecture_name != pref_name)
+                    or (pref_code and existing.prefecture_code != pref_code)
+                    or (region_name and existing.region_name != region_name)
                 )
-                continue
-
-            # Check for ICPE content (only for new/updated documents)
-            is_icpe = False
-
-            # First check title and description
-            combined_text = f"{title} {description}".strip()
-            if contains_icpe_keywords(combined_text):
-                is_icpe = True
-                logger.info(
-                    f"Document marked as ICPE based on title/description: {title}"
-                )
-            else:
-                # If not found in title/description, check the full page
-                if link:
-                    logger.info(f"Checking full page content for ICPE: {link}")
-                    if check_page_for_icpe(link):
-                        is_icpe = True
-                        logger.info(
-                            f"Document marked as ICPE based on full page content: {title}"
-                        )
-                    else:
-                        # Third step: Check PDFs linked from the page
-                        logger.info(f"Checking PDFs linked from page for ICPE: {link}")
-                        pdf_links = extract_pdf_links_from_page(link)
-                        if pdf_links:
-                            if check_pdfs_for_icpe(pdf_links):
-                                is_icpe = True
-                                logger.info(
-                                    f"Document marked as ICPE based on PDF content: {title}"
-                                )
-                        else:
-                            logger.info(f"No PDF links found on page: {link}")
-
-            # Check if document exists with same link but different date (update case)
-            existing_document = GovernmentDocument.objects.filter(link=link).first()
-
-            if existing_document:
-                # Update existing document
-                existing_document.title = title
-                existing_document.description = description
-                existing_document.date_updated = date_updated
-                existing_document.is_icpe = is_icpe
-                # Update prefecture info if provided
-                if prefecture_name:
-                    existing_document.prefecture_name = prefecture_name
-                if prefecture_code:
-                    existing_document.prefecture_code = prefecture_code
+                if not changed:
+                    continue
+                existing.title = card.title
+                existing.description = card.description
+                existing.date_updated = date_updated
+                existing.is_icpe = is_icpe
+                if pref_name:
+                    existing.prefecture_name = pref_name
+                if pref_code:
+                    existing.prefecture_code = pref_code
                 if region_name:
-                    existing_document.region_name = region_name
-                existing_document.save()
-                saved_count += 1
-                logger.info(
-                    f"Updated existing document: {existing_document.title} (ICPE: {is_icpe})"
-                )
+                    existing.region_name = region_name
+                existing.save()
+                saved += 1
             else:
-                # Create new document
-                document = GovernmentDocument.objects.create(
-                    title=title,
-                    description=description,
-                    link=link,
+                doc = GovernmentDocument.objects.create(
+                    title=card.title,
+                    description=card.description,
+                    link=card.link,
                     date_updated=date_updated,
-                    prefecture_name=prefecture_name,
-                    prefecture_code=prefecture_code,
+                    prefecture_name=pref_name,
+                    prefecture_code=pref_code,
                     region_name=region_name,
                     is_icpe=is_icpe,
                 )
-                saved_count += 1
-                logger.info(f"Created new document: {document.title} (ICPE: {is_icpe})")
+                existing_by_link[card.link] = doc
+                saved += 1
 
         except Exception as e:
-            logger.error(f"Error saving item to database: {e}")
+            logger.error(f"Error saving item '{card.title}' to database: {e}")
             continue
 
-    return saved_count
+    return saved
 
 
-def scrape_government_site(
-    domain: str, keyword: str, offset: int = 0
-) -> List[Dict[str, Any]]:
-    """
-    Scrape a government website for keyword-related content.
-
-    Args:
-        domain (str): The domain name (e.g., 'morbihan.gouv.fr')
-        keyword (str): The search keyword
-        offset (int): The pagination offset (default: 0)
-
-    Returns:
-        List[Dict[str, Any]]: List of dictionaries containing scraped data
-    """
-    # Initialize scraper with anti-detection measures
-    initialize_scraper()
-    
-    logger.info(
-        f"Starting government site scraping - Domain: {domain}, Keyword: '{keyword}', Offset: {offset}"
-    )
-
+def remove_documents_with_negative_keywords(days: int = CONFIG.cleanup_window_days) -> int:
+    removed = 0
     try:
-        # Construct the URL based on parameters
-        if offset > 0:
-            url = f"https://www.{domain}/contenu/recherche/(offset)/{offset}/(searchtext)/{keyword}?SearchText={keyword}"
-            logger.debug(f"Constructed paginated URL: {url}")
-        else:
-            url = f"https://www.{domain}/contenu/recherche/(searchtext)/{keyword}?SearchText={keyword}"
-            logger.debug(f"Constructed initial URL: {url}")
+        cutoff = timezone.now() - timedelta(days=days)
+        for d in GovernmentDocument.objects.filter(date_updated__gte=cutoff):
+            if contains_negative_keywords(d.title, d.description or ""):
+                d.delete()
+                removed += 1
+    except Exception as e:
+        logger.error(f"Error during negative keyword cleanup: {e}")
+    return removed
 
-        # Add throttling before request
-        throttle_request()
-        
-        # Make the request with retry logic
-        logger.info(f"Making HTTP request to: {url}")
-        response = make_request_with_retry(url, max_retries=3, timeout=30)
-        logger.info(
-            f"HTTP request successful - Status: {response.status_code}, Content length: {len(response.content)} bytes"
-        )
 
-        # Parse the HTML
-        logger.debug("Parsing HTML content with BeautifulSoup")
-        soup = BeautifulSoup(response.content, "html.parser")
-        logger.debug(
-            f"HTML parsing complete - Document title: '{soup.title.string if soup.title else 'No title'}'"
-        )
+# ------------------------------------------------------------------------------
+# Scraping flows
+# ------------------------------------------------------------------------------
 
-        # Find all div elements with fr-card class
-        results = []
+def build_search_url(domain: str, keyword: str, offset: int = 0) -> str:
+    if offset > 0:
+        return f"https://www.{domain}/contenu/recherche/(offset)/{offset}/(searchtext)/{keyword}?SearchText={keyword}"
+    return f"https://www.{domain}/contenu/recherche/(searchtext)/{keyword}?SearchText={keyword}"
 
-        # Look for div elements with fr-card class
-        logger.debug("Searching for fr-card elements in the HTML")
-        fr_cards = soup.find_all("div", class_="fr-card")
-        logger.info(f"Found {len(fr_cards)} fr-card elements on the page")
 
-        for i, card in enumerate(fr_cards, 1):
-            logger.debug(f"Processing card {i}/{len(fr_cards)}")
-            card_data = extract_card_data(card, domain)
-            if card_data:
-                results.append(card_data)
-                logger.debug(f"Successfully extracted data from card {i}")
-            else:
-                logger.warning(f"Failed to extract data from card {i}")
-
-        logger.info(f"Successfully scraped {len(results)} items from {url}")
-
-        # Save to database
-        if results:
-            logger.info(f"Starting database save process for {len(results)} items")
-            saved_count = save_to_database(results, domain)
-            logger.info(
-                f"Database save complete - Saved {saved_count} items to database"
-            )
-        else:
-            logger.warning(f"No results to save to database from {url}")
-
+def scrape_government_site(domain: str, keyword: str, offset: int = 0) -> List[ScrapedCard]:
+    """
+    Scrape a single search results page and return cards.
+    """
+    try:
+        url = build_search_url(domain, keyword, offset)
+        rsp = _requester.get(url, timeout=CONFIG.request_timeout)
+        soup = BeautifulSoup(rsp.content, "html.parser")
+        cards = soup.find_all("div", class_="fr-card")
+        results: List[ScrapedCard] = []
+        for card in cards:
+            sc = extract_card_data(card, domain)
+            if sc:
+                results.append(sc)
         return results
-
     except requests.RequestException as e:
-        logger.error(f"Request error while scraping {url}: {e}")
+        logger.error(f"Request error while scraping {domain} offset {offset}: {e}")
         return []
     except Exception as e:
-        logger.error(f"Error while scraping {url}: {e}")
+        logger.error(f"Error while scraping {domain} offset {offset}: {e}")
         return []
 
 
-def extract_card_data(card_element, domain: str = None) -> Dict[str, Any]:
+def iterate_search_pages(
+    domain: str, keyword: str, *, start: int = 0, step: int = CONFIG.page_step, limit: int = CONFIG.max_offset
+) -> Iterable[List[ScrapedCard]]:
     """
-    Extract data from a single fr-card element.
-
-    Args:
-        card_element: BeautifulSoup element representing a fr-card
-        domain: The domain name to use for relative links (e.g., 'morbihan.gouv.fr')
-
-    Returns:
-        Dict[str, Any]: Extracted data from the card
+    Generator that yields results page-by-page until exhaustion or limit.
     """
-    logger.debug(f"Starting card data extraction with domain: {domain}")
-
-    try:
-        card_data = {}
-
-        # Extract title
-        logger.debug("Extracting title from card element")
-        title_element = (
-            card_element.find("h3")
-            or card_element.find("h2")
-            or card_element.find("h1")
-        )
-        if title_element:
-            title_text = title_element.get_text(strip=True)
-            card_data["title"] = title_text
-            logger.debug(
-                f"Found title: '{title_text[:50]}{'...' if len(title_text) > 50 else ''}'"
-            )
-        else:
-            logger.debug("No title element found in card")
-
-        # Extract link
-        logger.debug("Extracting link from card element")
-        link_element = card_element.find("a")
-        if link_element:
-            original_link = link_element.get("href", "")
-            card_data["link"] = original_link
-            logger.debug(f"Found original link: '{original_link}'")
-
-            if original_link and not original_link.startswith("http") and domain:
-                full_link = f"https://www.{domain}" + original_link
-                card_data["link"] = full_link
-                logger.debug(f"Converted relative link to absolute: '{full_link}'")
-            elif original_link and original_link.startswith("http"):
-                logger.debug(f"Link is already absolute: '{original_link}'")
-        else:
-            logger.debug("No link element found in card")
-
-        # Extract description/summary
-        logger.debug("Extracting description from card element")
-        description_element = card_element.find("p") or card_element.find(
-            "div", class_="fr-card__desc"
-        )
-        if description_element:
-            description_text = description_element.get_text(strip=True)
-            card_data["description"] = description_text
-            logger.debug(
-                f"Found description: '{description_text[:100]}{'...' if len(description_text) > 100 else ''}'"
-            )
-        else:
-            logger.debug("No description element found in card")
-
-        # Extract date if available
-        logger.debug("Extracting date from card element")
-        date_element = card_element.find("time") or card_element.find(
-            "span", class_="date"
-        )
-        if date_element:
-            date_text = date_element.get_text(strip=True)
-            card_data["date"] = date_text
-            logger.debug(f"Found date: '{date_text}'")
-        else:
-            logger.debug("No date element found in card")
-
-        # Extract any additional metadata
-        logger.debug("Extracting metadata from card element")
-        metadata = {}
-
-        # Look for specific classes that might contain useful info
-        for class_name in ["fr-card__title", "fr-card__content", "fr-card__detail"]:
-            elements = card_element.find_all(class_=class_name)
-            if elements:
-                metadata[class_name] = [elem.get_text(strip=True) for elem in elements]
-                logger.debug(
-                    f"Found {len(elements)} elements with class '{class_name}'"
-                )
-
-        if metadata:
-            card_data["metadata"] = metadata
-            logger.debug(f"Extracted metadata with keys: {list(metadata.keys())}")
-        else:
-            logger.debug("No metadata found in card")
-
-        # Get the full HTML content for debugging
-        card_data["html_content"] = str(card_element)
-        logger.debug(
-            f"Card HTML content length: {len(card_data['html_content'])} characters"
-        )
-
-        logger.info(
-            f"Successfully extracted card data - Title: '{card_data.get('title', 'No title')[:30]}...', Link: '{card_data.get('link', 'No link')[:50]}...'"
-        )
-        return card_data
-
-    except Exception as e:
-        logger.error(f"Error extracting card data: {e}")
-        logger.debug(f"Card element HTML: {str(card_element)[:200]}...")
-        return {}
+    offset = start
+    page_count = 0
+    while offset <= limit:
+        page = scrape_government_site(domain, keyword, offset)
+        if not page:
+            break
+        yield page
+        offset += step
+        page_count += 1
+        if page_count % 5 == 0:
+            # Periodic session reset to reduce detection risk
+            _requester.reset()
 
 
 def scrape_url(domain: str, keyword: str, offset: int = 0) -> List[Dict[str, Any]]:
     """
-    Main function to scrape a government website and return structured data.
-
-    Args:
-        domain (str): The domain name (e.g., 'morbihan.gouv.fr')
-        keyword (str): The search keyword
-        offset (int): The pagination offset (default: 0)
-
-    Returns:
-        List[Dict[str, Any]]: List of scraped items
+    Backwards-compatible wrapper (returns dicts).
     """
-    return scrape_government_site(domain, keyword, offset)
+    cards = scrape_government_site(domain, keyword, offset)
+    return [card.__dict__ for card in cards]
 
 
 def scrape_all_results(domain: str, keyword: str) -> List[Dict[str, Any]]:
     """
-    Scrape all results from a government website by incrementing offset until no more results.
-
-    Args:
-        domain (str): The domain name (e.g., 'morbihan.gouv.fr')
-        keyword (str): The search keyword
-
-    Returns:
-        List[Dict[str, Any]]: List of all scraped items from all pages
+    Scrape all pages, persist results, run lightweight cleanup, and return all items (as dicts).
     """
-    # Initialize scraper with anti-detection measures
-    initialize_scraper()
-    
-    all_results = []
-    offset = 0
-    page_count = 0
+    all_cards: List[ScrapedCard] = []
+    for page in iterate_search_pages(domain, keyword):
+        all_cards.extend(page)
 
-    logger.info(
-        f"Starting to scrape all results for domain: {domain}, keyword: {keyword}"
-    )
+    if all_cards:
+        saved_count = save_to_database(all_cards, domain)
+        logger.info(f"Saved {saved_count} items to database.")
 
-    while True:
-        logger.info(f"Scraping offset {offset}...")
+    removed_count = remove_documents_with_negative_keywords(days=CONFIG.cleanup_window_days)
+    if removed_count:
+        logger.info(f"Removed {removed_count} negative-keyword documents (last {CONFIG.cleanup_window_days} days).")
 
-        # Scrape current page
-        page_results = scrape_government_site(domain, keyword, offset)
-
-        # If no results found, we've reached the end
-        if not page_results:
-            logger.info(f"No more results found at offset {offset}. Scraping complete.")
-            break
-
-        # Add results to our collection
-        all_results.extend(page_results)
-        logger.info(
-            f"Found {len(page_results)} items at offset {offset}. Total so far: {len(all_results)}"
-        )
-
-        # Increment offset by 10 for next page
-        offset += 10
-        page_count += 1
-
-        # Reset session every 5 pages to avoid detection
-        if page_count % 5 == 0:
-            logger.info(f"Resetting session after {page_count} pages to avoid detection")
-            reset_session()
-
-        # Safety check to prevent infinite loops (max 1000 results)
-        if offset > 1000:
-            logger.warning(
-                "Reached maximum offset limit of 1000. Stopping to prevent infinite loop."
-            )
-            break
-
-    logger.info(f"Scraping complete. Total results found: {len(all_results)}")
-
-    # Save all results to database
-    if all_results:
-        saved_count = save_to_database(all_results, domain)
-        logger.info(f"Saved {saved_count} total items to database")
-
-    # Clean up existing documents that contain negative keywords
-    removed_count = remove_documents_with_negative_keywords()
-    if removed_count > 0:
-        logger.info(
-            f"Removed {removed_count} existing documents containing negative keywords"
-        )
-
-    return all_results
+    return [card.__dict__ for card in all_cards]
 
 
 def scrape_generic(url: str) -> List[Dict[str, Any]]:
     """
-    Generic scraper for any URL.
-
-    Args:
-        url (str): The URL to scrape
-
-    Returns:
-        List[Dict[str, Any]]: List of dictionaries containing scraped data
+    Generic scraper for any URL (no DB save, no prefecture context).
+    Returns list of dicts for compatibility.
     """
     try:
-        # Add throttling before request
-        throttle_request()
-        
-        response = make_request_with_retry(url, max_retries=2, timeout=30)
-        soup = BeautifulSoup(response.content, "html.parser")
-
-        # Extract domain from URL for relative link handling
-        from urllib.parse import urlparse
-
-        parsed_url = urlparse(url)
-        domain = parsed_url.netloc.replace("www.", "") if parsed_url.netloc else None
-
-        # Look for fr-card elements
+        rsp = _requester.get(url, timeout=CONFIG.request_timeout)
+        soup = BeautifulSoup(rsp.content, "html.parser")
+        parsed = urlparse(url)
+        domain = parsed.netloc.replace("www.", "") if parsed.netloc else None
         fr_cards = soup.find_all("div", class_="fr-card")
-        results = []
-
+        results: List[ScrapedCard] = []
         for card in fr_cards:
-            card_data = extract_card_data(card, domain)
-            if card_data:
-                results.append(card_data)
-
-        logger.info(f"Successfully scraped {len(results)} items from {url}")
-
-        # Note: scrape_generic doesn't save to database as it doesn't have prefecture context
-        # Use scrape_government_site or scrape_all_results for database saving
-
-        return results
-
+            sc = extract_card_data(card, domain)
+            if sc:
+                results.append(sc)
+        return [c.__dict__ for c in results]
     except Exception as e:
         logger.error(f"Error while scraping {url}: {e}")
         return []
