@@ -59,8 +59,8 @@ Your settings are already optimized for Heroku:
 
 ```python
 # Uses REDIS_URL from Heroku
-CELERY_BROKER_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+CELERY_BROKER_URL = os.environ.get('REDISCLOUD_URL', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.environ.get('REDISCLOUD_URL', 'redis://localhost:6379/0')
 
 # Heroku-specific optimizations
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
