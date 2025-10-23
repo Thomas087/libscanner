@@ -191,7 +191,8 @@ import urllib.parse
 
 def get_redis_url():
     """Get Redis URL with proper parsing for Heroku."""
-    redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+    # Heroku Redis uses REDISCLOUD_URL, fallback to REDIS_URL for local development
+    redis_url = os.environ.get('REDISCLOUD_URL') or os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
     
     # For Heroku Redis, ensure proper URL format
     if redis_url.startswith('redis://'):

@@ -15,11 +15,12 @@ class Command(BaseCommand):
         
         # Check environment variables
         self.stdout.write("Environment variables:")
+        self.stdout.write(f"  REDISCLOUD_URL: {os.environ.get('REDISCLOUD_URL', 'NOT SET')}")
         self.stdout.write(f"  REDIS_URL: {os.environ.get('REDIS_URL', 'NOT SET')}")
         self.stdout.write(f"  CELERY_BROKER_URL: {os.environ.get('CELERY_BROKER_URL', 'NOT SET')}")
         
         # Get Redis URL from settings
-        redis_url = getattr(settings, 'REDIS_URL', os.environ.get('REDIS_URL', 'redis://localhost:6379/0'))
+        redis_url = getattr(settings, 'REDIS_URL', os.environ.get('REDISCLOUD_URL') or os.environ.get('REDIS_URL', 'redis://localhost:6379/0'))
         self.stdout.write(f"Settings REDIS_URL: {redis_url}")
         
         try:
