@@ -612,11 +612,11 @@ def extract_card_data(card_element, domain: Optional[str] = None) -> Optional[Sc
 
 def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timezone.now, batch_size: int = CONFIG.db_batch_size) -> int:
     """
-    Persist scraped items with minimal DB churn:
-    - Batch loading of existing records
+    Persist scraped items with minimal memory usage:
+    - Process items one-by-one with immediate DB operations
     - Skip no-op updates
     - Negative keyword filtering
-    - Use bulk_create/bulk_update for efficiency
+    - No batching - immediate saves for lowest memory footprint
     """
     if not scraped_cards:
         return 0
@@ -628,115 +628,99 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
     pref_code = prefecture_info["code"] if prefecture_info else None
     region_name = prefecture_info["region"] if prefecture_info else None
 
-    # Process in smaller batches to avoid loading too many records at once
     saved = 0
-    for i in range(0, len(scraped_cards), batch_size):
-        batch = scraped_cards[i:i + batch_size]
-        logger.info(f"Processing batch {i//batch_size + 1} ({len(batch)} items)")
+    processed = 0
 
-        # Load existing records for this batch only
-        links = [c.link for c in batch if c.link]
-        existing_by_link = {d.link: d for d in GovernmentDocument.objects.filter(link__in=links)}
-        logger.debug(f"Found {len(existing_by_link)} existing records in database for this batch")
+    for card in scraped_cards:
+        try:
+            processed += 1
+            if processed % 100 == 0:
+                logger.info(f"Progress: {processed}/{len(scraped_cards)} items processed, {saved} saved/updated")
 
-        to_create = []
-        to_update = []
-        to_delete_ids = []
+            # Date from metadata if present
+            date_updated = now()
+            if card.metadata and "fr-card__detail" in card.metadata:
+                detail_text = " ".join(card.metadata["fr-card__detail"])
+                date_updated = parse_date_from_detail(detail_text)
 
-        for card in batch:
+            # Check negative keywords first (we want to delete records with negative keywords)
+            # Query DB for this specific link only
             try:
-                # Date from metadata if present
-                date_updated = now()
-                if card.metadata and "fr-card__detail" in card.metadata:
-                    detail_text = " ".join(card.metadata["fr-card__detail"])
-                    date_updated = parse_date_from_detail(detail_text)
-
-                # Check negative keywords first (we want to delete records with negative keywords)
-                existing = existing_by_link.get(card.link)
-                if contains_negative_keywords(card.title, card.description):
-                    if existing:
-                        logger.info(f"Negative keyword found in existing record, marking for deletion: '{card.title}' - {card.link}")
-                        to_delete_ids.append(existing.id)
-                    else:
-                        logger.debug(f"Negative keyword found in new record, skipping: '{card.title}'")
-                    continue
-
-                # Check if record already exists with same link AND date_updated
-                if existing and existing.date_updated == date_updated:
-                    # Record is identical (same link + date_updated), skip it entirely
-                    logger.debug(f"Skipping unchanged record (same link + date): '{card.title}' - {card.link}")
-                    continue
-
-                # Only check ICPE status if we're creating or updating a record
-                logger.debug(f"Checking ICPE status for: '{card.title}' - {card.link}")
-                is_icpe = icpe_flag_for_item(card.title, card.description, card.link, domain)
-                logger.debug(f"ICPE check result for '{card.title}': {is_icpe}")
-
-                if existing:
-                    # Record exists but has different date_updated or other fields changed
-                    changed = (
-                        existing.title != card.title
-                        or (existing.description or "") != (card.description or "")
-                        or existing.date_updated != date_updated
-                        or existing.is_icpe != is_icpe
-                        or (pref_name and existing.prefecture_name != pref_name)
-                        or (pref_code and existing.prefecture_code != pref_code)
-                        or (region_name and existing.region_name != region_name)
-                    )
-                    if changed:
-                        logger.info(f"Updating existing record: '{card.title}' - {card.link} (ICPE: {is_icpe})")
-                        existing.title = card.title
-                        existing.description = card.description
-                        existing.date_updated = date_updated
-                        existing.is_icpe = is_icpe
-                        if pref_name:
-                            existing.prefecture_name = pref_name
-                        if pref_code:
-                            existing.prefecture_code = pref_code
-                        if region_name:
-                            existing.region_name = region_name
-                        to_update.append(existing)
-                    else:
-                        logger.debug(f"No changes detected for existing record: '{card.title}'")
-                else:
-                    # Prepare new object for bulk_create
-                    logger.info(f"Creating new record: '{card.title}' - {card.link} (ICPE: {is_icpe})")
-                    doc = GovernmentDocument(
-                        title=card.title,
-                        description=card.description,
-                        link=card.link,
-                        date_updated=date_updated,
-                        prefecture_name=pref_name,
-                        prefecture_code=pref_code,
-                        region_name=region_name,
-                        is_icpe=is_icpe,
-                    )
-                    to_create.append(doc)
-
-            except Exception as e:
-                logger.error(f"Error preparing item '{card.title}' for database: {e}")
+                existing = GovernmentDocument.objects.filter(link=card.link).only(
+                    'id', 'title', 'description', 'date_updated', 'is_icpe',
+                    'prefecture_name', 'prefecture_code', 'region_name'
+                ).first()
+            except Exception as db_error:
+                logger.error(f"Database error while looking up '{card.link}': {db_error}")
                 continue
 
-        # Perform bulk operations
-        if to_delete_ids:
-            GovernmentDocument.objects.filter(id__in=to_delete_ids).delete()
-            logger.info(f"✗ Deleted {len(to_delete_ids)} items with negative keywords")
+            if contains_negative_keywords(card.title, card.description):
+                if existing:
+                    logger.info(f"Negative keyword found in existing record, deleting immediately: '{card.title}' - {card.link}")
+                    existing.delete()
+                else:
+                    logger.debug(f"Negative keyword found in new record, skipping: '{card.title}'")
+                continue
 
-        if to_create:
-            GovernmentDocument.objects.bulk_create(to_create, batch_size=batch_size)
-            saved += len(to_create)
-            logger.info(f"✓ Created {len(to_create)} new items")
+            # Check if record already exists with same link AND date_updated
+            if existing and existing.date_updated == date_updated:
+                # Record is identical (same link + date_updated), skip it entirely
+                logger.debug(f"Skipping unchanged record (same link + date): '{card.title}' - {card.link}")
+                continue
 
-        if to_update:
-            GovernmentDocument.objects.bulk_update(
-                to_update,
-                ['title', 'description', 'date_updated', 'is_icpe', 'prefecture_name', 'prefecture_code', 'region_name'],
-                batch_size=batch_size
-            )
-            saved += len(to_update)
-            logger.info(f"↻ Updated {len(to_update)} existing items")
+            # Only check ICPE status if we're creating or updating a record
+            logger.debug(f"Checking ICPE status for: '{card.title}' - {card.link}")
+            is_icpe = icpe_flag_for_item(card.title, card.description, card.link, domain)
+            logger.debug(f"ICPE check result for '{card.title}': {is_icpe}")
 
-    logger.info(f"Batch processing complete: {saved} total records saved/updated for {domain}")
+            if existing:
+                # Record exists but has different date_updated or other fields changed
+                changed = (
+                    existing.title != card.title
+                    or (existing.description or "") != (card.description or "")
+                    or existing.date_updated != date_updated
+                    or existing.is_icpe != is_icpe
+                    or (pref_name and existing.prefecture_name != pref_name)
+                    or (pref_code and existing.prefecture_code != pref_code)
+                    or (region_name and existing.region_name != region_name)
+                )
+                if changed:
+                    logger.info(f"Updating existing record: '{card.title}' - {card.link} (ICPE: {is_icpe})")
+                    existing.title = card.title
+                    existing.description = card.description
+                    existing.date_updated = date_updated
+                    existing.is_icpe = is_icpe
+                    if pref_name:
+                        existing.prefecture_name = pref_name
+                    if pref_code:
+                        existing.prefecture_code = pref_code
+                    if region_name:
+                        existing.region_name = region_name
+                    existing.save()
+                    saved += 1
+                else:
+                    logger.debug(f"No changes detected for existing record: '{card.title}'")
+            else:
+                # Create new record immediately
+                logger.info(f"Creating new record: '{card.title}' - {card.link} (ICPE: {is_icpe})")
+                doc = GovernmentDocument(
+                    title=card.title,
+                    description=card.description,
+                    link=card.link,
+                    date_updated=date_updated,
+                    prefecture_name=pref_name,
+                    prefecture_code=pref_code,
+                    region_name=region_name,
+                    is_icpe=is_icpe,
+                )
+                doc.save()
+                saved += 1
+
+        except Exception as e:
+            logger.error(f"Error processing item '{card.title}': {e}")
+            continue
+
+    logger.info(f"Processing complete: {saved} total records saved/updated for {domain}")
     return saved
 
 
