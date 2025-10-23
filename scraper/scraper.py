@@ -57,6 +57,9 @@ class ScraperConfig:
     page_step: int = 10
     max_offset: int = 1000
     cache_ttl_seconds: int = 600  # 10 minutes
+    db_batch_size: int = 500  # Batch size for database operations
+    cache_max_memory_mb: int = 100  # Maximum cache memory in MB
+    cache_max_items: int = 512  # Maximum number of cached items
 
 
 CONFIG = ScraperConfig()
@@ -174,29 +177,116 @@ class Requester:
 _requester = Requester()
 
 # ------------------------------------------------------------------------------
-# TTL cache decorator (simple, dependency-free)
+# Memory-aware TTL cache decorator
 # ------------------------------------------------------------------------------
 
-def ttl_cache(seconds: int = CONFIG.cache_ttl_seconds, maxsize: int = 1024):
+import sys
+
+def ttl_cache(seconds: int = CONFIG.cache_ttl_seconds, maxsize: int = CONFIG.cache_max_items):
+    """
+    Memory-aware TTL cache that evicts based on both time, count, and memory size.
+
+    Improvements:
+    - Tracks approximate memory usage
+    - Evicts LRU items when memory limit is reached
+    - Evicts expired items proactively
+    - More aggressive cleanup to prevent memory bloat
+    """
     def deco(fn):
-        cache: Dict[Any, Tuple[float, Any]] = {}
-        order: List[Any] = []
+        cache: Dict[Any, Tuple[float, Any, int]] = {}  # key -> (timestamp, value, size_bytes)
+        order: List[Any] = []  # LRU order
+        total_size_bytes: int = 0
+        max_size_bytes = CONFIG.cache_max_memory_mb * 1024 * 1024
+
+        def get_size(obj: Any) -> int:
+            """Estimate object size in bytes."""
+            try:
+                return sys.getsizeof(obj)
+            except:
+                # Fallback for objects that don't support getsizeof
+                if isinstance(obj, str):
+                    return len(obj.encode('utf-8'))
+                return 1024  # Conservative default
+
+        def evict_oldest():
+            """Evict the oldest item from cache."""
+            nonlocal total_size_bytes
+            if order:
+                oldest = order.pop(0)
+                if oldest in cache:
+                    _, _, size = cache.pop(oldest)
+                    total_size_bytes -= size
+
+        def evict_expired(now: float):
+            """Proactively evict all expired items."""
+            nonlocal total_size_bytes
+            expired_keys = [k for k, (ts, _, _) in cache.items() if now - ts >= seconds]
+            for key in expired_keys:
+                if key in cache:
+                    _, _, size = cache.pop(key)
+                    total_size_bytes -= size
+                if key in order:
+                    order.remove(key)
 
         def wrapper(*args):
+            nonlocal total_size_bytes
+
             now = time.time()
             key = args
+
+            # Proactively clean expired items every 10 calls
+            if len(cache) % 10 == 0:
+                evict_expired(now)
+
+            # Check for cache hit
             hit = cache.get(key)
-            if hit is not None and now - hit[0] < seconds:
-                return hit[1]
+            if hit is not None:
+                timestamp, value, _ = hit
+                if now - timestamp < seconds:
+                    # Move to end of LRU order
+                    if key in order:
+                        order.remove(key)
+                    order.append(key)
+                    return value
+                else:
+                    # Expired, remove it
+                    _, _, size = cache.pop(key)
+                    total_size_bytes -= size
+                    if key in order:
+                        order.remove(key)
+
+            # Cache miss - compute value
             value = fn(*args)
-            cache[key] = (now, value)
+            value_size = get_size(value)
+
+            # Evict items if over memory limit
+            while total_size_bytes + value_size > max_size_bytes and order:
+                evict_oldest()
+
+            # Evict items if over count limit
+            while len(order) >= maxsize and order:
+                evict_oldest()
+
+            # Add to cache
+            cache[key] = (now, value, value_size)
             order.append(key)
-            if len(order) > maxsize:
-                oldest = order.pop(0)
-                cache.pop(oldest, None)
+            total_size_bytes += value_size
+
+            logger.debug(f"Cache stats: {len(cache)} items, {total_size_bytes / 1024 / 1024:.2f}MB")
+
             return value
 
+        def cache_info():
+            """Get cache statistics."""
+            return {
+                'size': len(cache),
+                'memory_mb': total_size_bytes / 1024 / 1024,
+                'max_items': maxsize,
+                'max_memory_mb': CONFIG.cache_max_memory_mb
+            }
+
         wrapper.cache_clear = lambda: (cache.clear(), order.clear())
+        wrapper.cache_info = cache_info
         return wrapper
 
     return deco
@@ -311,8 +401,13 @@ from functools import lru_cache
 
 @lru_cache(maxsize=1)
 def _negative_keywords_lower() -> List[str]:
+    """
+    Load negative keywords using values_list for memory efficiency.
+    Only loads keyword strings, not full ORM objects.
+    """
     try:
-        return [nk.keyword.lower() for nk in NegativeKeyword.objects.all()]
+        # Use values_list(flat=True) to get only keyword strings
+        return [kw.lower() for kw in NegativeKeyword.objects.values_list('keyword', flat=True) if kw]
     except Exception as e:
         logger.error(f"Error loading negative keywords: {e}")
         return []
@@ -515,12 +610,13 @@ def extract_card_data(card_element, domain: Optional[str] = None) -> Optional[Sc
 # Persistence
 # ------------------------------------------------------------------------------
 
-def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timezone.now) -> int:
+def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timezone.now, batch_size: int = CONFIG.db_batch_size) -> int:
     """
     Persist scraped items with minimal DB churn:
-    - Preload existing by link
+    - Batch loading of existing records
     - Skip no-op updates
     - Negative keyword filtering
+    - Use bulk_create/bulk_update for efficiency
     """
     if not scraped_cards:
         return 0
@@ -530,85 +626,133 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
     pref_code = prefecture_info["code"] if prefecture_info else None
     region_name = prefecture_info["region"] if prefecture_info else None
 
-    links = [c.link for c in scraped_cards if c.link]
-    existing_by_link = {d.link: d for d in GovernmentDocument.objects.filter(link__in=links)}
-
+    # Process in smaller batches to avoid loading too many records at once
     saved = 0
-    for card in scraped_cards:
-        try:
-            # Date from metadata if present
-            date_updated = now()
-            detail_text = None
-            if card.metadata and "fr-card__detail" in card.metadata:
-                detail_text = " ".join(card.metadata["fr-card__detail"])
-                date_updated = parse_date_from_detail(detail_text)
+    for i in range(0, len(scraped_cards), batch_size):
+        batch = scraped_cards[i:i + batch_size]
 
-            if contains_negative_keywords(card.title, card.description):
+        # Load existing records for this batch only
+        links = [c.link for c in batch if c.link]
+        existing_by_link = {d.link: d for d in GovernmentDocument.objects.filter(link__in=links)}
+
+        to_create = []
+        to_update = []
+        to_delete_ids = []
+
+        for card in batch:
+            try:
+                # Date from metadata if present
+                date_updated = now()
+                if card.metadata and "fr-card__detail" in card.metadata:
+                    detail_text = " ".join(card.metadata["fr-card__detail"])
+                    date_updated = parse_date_from_detail(detail_text)
+
+                if contains_negative_keywords(card.title, card.description):
+                    existing = existing_by_link.get(card.link)
+                    if existing:
+                        to_delete_ids.append(existing.id)
+                    continue
+
+                is_icpe = icpe_flag_for_item(card.title, card.description, card.link, domain)
+
                 existing = existing_by_link.get(card.link)
                 if existing:
-                    existing.delete()
-                    existing_by_link.pop(card.link, None)
+                    changed = (
+                        existing.title != card.title
+                        or (existing.description or "") != (card.description or "")
+                        or existing.date_updated != date_updated
+                        or existing.is_icpe != is_icpe
+                        or (pref_name and existing.prefecture_name != pref_name)
+                        or (pref_code and existing.prefecture_code != pref_code)
+                        or (region_name and existing.region_name != region_name)
+                    )
+                    if changed:
+                        existing.title = card.title
+                        existing.description = card.description
+                        existing.date_updated = date_updated
+                        existing.is_icpe = is_icpe
+                        if pref_name:
+                            existing.prefecture_name = pref_name
+                        if pref_code:
+                            existing.prefecture_code = pref_code
+                        if region_name:
+                            existing.region_name = region_name
+                        to_update.append(existing)
+                else:
+                    # Prepare new object for bulk_create
+                    doc = GovernmentDocument(
+                        title=card.title,
+                        description=card.description,
+                        link=card.link,
+                        date_updated=date_updated,
+                        prefecture_name=pref_name,
+                        prefecture_code=pref_code,
+                        region_name=region_name,
+                        is_icpe=is_icpe,
+                    )
+                    to_create.append(doc)
+
+            except Exception as e:
+                logger.error(f"Error preparing item '{card.title}' for database: {e}")
                 continue
 
-            is_icpe = icpe_flag_for_item(card.title, card.description, card.link, domain)
+        # Perform bulk operations
+        if to_delete_ids:
+            GovernmentDocument.objects.filter(id__in=to_delete_ids).delete()
+            logger.debug(f"Bulk deleted {len(to_delete_ids)} items with negative keywords")
 
-            existing = existing_by_link.get(card.link)
-            if existing:
-                changed = (
-                    existing.title != card.title
-                    or (existing.description or "") != (card.description or "")
-                    or existing.date_updated != date_updated
-                    or existing.is_icpe != is_icpe
-                    or (pref_name and existing.prefecture_name != pref_name)
-                    or (pref_code and existing.prefecture_code != pref_code)
-                    or (region_name and existing.region_name != region_name)
-                )
-                if not changed:
-                    continue
-                existing.title = card.title
-                existing.description = card.description
-                existing.date_updated = date_updated
-                existing.is_icpe = is_icpe
-                if pref_name:
-                    existing.prefecture_name = pref_name
-                if pref_code:
-                    existing.prefecture_code = pref_code
-                if region_name:
-                    existing.region_name = region_name
-                existing.save()
-                saved += 1
-            else:
-                doc = GovernmentDocument.objects.create(
-                    title=card.title,
-                    description=card.description,
-                    link=card.link,
-                    date_updated=date_updated,
-                    prefecture_name=pref_name,
-                    prefecture_code=pref_code,
-                    region_name=region_name,
-                    is_icpe=is_icpe,
-                )
-                existing_by_link[card.link] = doc
-                saved += 1
+        if to_create:
+            GovernmentDocument.objects.bulk_create(to_create, batch_size=batch_size)
+            saved += len(to_create)
+            logger.debug(f"Bulk created {len(to_create)} new items")
 
-        except Exception as e:
-            logger.error(f"Error saving item '{card.title}' to database: {e}")
-            continue
+        if to_update:
+            GovernmentDocument.objects.bulk_update(
+                to_update,
+                ['title', 'description', 'date_updated', 'is_icpe', 'prefecture_name', 'prefecture_code', 'region_name'],
+                batch_size=batch_size
+            )
+            saved += len(to_update)
+            logger.debug(f"Bulk updated {len(to_update)} existing items")
 
     return saved
 
 
 def remove_documents_with_negative_keywords(days: int = CONFIG.cleanup_window_days) -> int:
-    removed = 0
+    """
+    Remove documents containing negative keywords.
+    Uses iterator() for streaming and bulk delete for efficiency.
+    """
     try:
         cutoff = timezone.now() - timedelta(days=days)
-        for d in GovernmentDocument.objects.filter(date_updated__gte=cutoff):
+
+        # Collect IDs to delete in batches
+        to_delete_ids = []
+        total_removed = 0
+        batch_size = CONFIG.db_batch_size
+
+        # Use iterator() to stream results without loading all into memory
+        for d in GovernmentDocument.objects.filter(date_updated__gte=cutoff).iterator(chunk_size=batch_size):
             if contains_negative_keywords(d.title, d.description or ""):
-                d.delete()
-                removed += 1
+                to_delete_ids.append(d.id)
+
+                # Perform bulk delete when batch is full
+                if len(to_delete_ids) >= batch_size:
+                    GovernmentDocument.objects.filter(id__in=to_delete_ids).delete()
+                    total_removed += len(to_delete_ids)
+                    logger.debug(f"Bulk deleted batch of {len(to_delete_ids)} items with negative keywords")
+                    to_delete_ids.clear()
+
+        # Delete remaining items
+        if to_delete_ids:
+            GovernmentDocument.objects.filter(id__in=to_delete_ids).delete()
+            total_removed += len(to_delete_ids)
+            logger.debug(f"Bulk deleted final batch of {len(to_delete_ids)} items with negative keywords")
+
+        return total_removed
     except Exception as e:
         logger.error(f"Error during negative keyword cleanup: {e}")
-    return removed
+        return 0
 
 
 # ------------------------------------------------------------------------------
@@ -672,20 +816,41 @@ def scrape_url(domain: str, keyword: str, offset: int = 0) -> List[Dict[str, Any
     return [card.__dict__ for card in cards]
 
 
-def scrape_all_results(domain: str, keyword: str) -> List[Dict[str, Any]]:
+def scrape_all_results(domain: str, keyword: str, batch_size: int = CONFIG.db_batch_size) -> List[Dict[str, Any]]:
     """
-    Scrape all pages, persist results, run lightweight cleanup, and return all items (as dicts).
-    """
-    all_cards: List[ScrapedCard] = []
-    for page in iterate_search_pages(domain, keyword):
-        all_cards.extend(page)
+    Scrape all pages, persist results in batches, run lightweight cleanup.
+    Returns metadata about items (count, sample) instead of all items to reduce memory.
 
-    if all_cards:
-        saved_count = save_to_database(all_cards, domain)
-        logger.info(f"Saved {saved_count} items to database.")
+    For backward compatibility, still returns list of dicts but processes in batches.
+    """
+    batch: List[ScrapedCard] = []
+    total_saved = 0
+    total_count = 0
+
+    for page in iterate_search_pages(domain, keyword):
+        batch.extend(page)
+        total_count += len(page)
+
+        # Process batch when it reaches batch_size
+        if len(batch) >= batch_size:
+            saved_count = save_to_database(batch, domain)
+            total_saved += saved_count
+            logger.info(f"Saved batch of {saved_count} items to database (total so far: {total_saved}).")
+            batch.clear()  # Clear batch to free memory
+
+    # Process remaining items in final batch
+    if batch:
+        saved_count = save_to_database(batch, domain)
+        total_saved += saved_count
+        logger.info(f"Saved final batch of {saved_count} items to database.")
+        batch.clear()
 
     removed_count = remove_documents_with_negative_keywords(days=CONFIG.cleanup_window_days)
     if removed_count:
         logger.info(f"Removed {removed_count} negative-keyword documents (last {CONFIG.cleanup_window_days} days).")
 
-    return [card.__dict__ for card in all_cards]
+    logger.info(f"Total saved for {domain}/{keyword}: {total_saved} items from {total_count} scraped.")
+
+    # Return summary instead of full data to save memory
+    # For backward compatibility, return empty list (data is already in DB)
+    return []

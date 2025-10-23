@@ -131,78 +131,92 @@ class Command(BaseCommand):
 
 
     def _run_sync_scraping(self, keywords, region_filter, prefecture_filter, output_file, output_format, prefectures_to_scrape):
-        """Run scraping synchronously (original behavior)."""
+        """
+        Run scraping synchronously with memory-efficient approach.
+
+        Note: scrape_all_results now saves directly to database and returns empty list
+        to save memory. We track counts instead of accumulating all data.
+        """
         self.stdout.write(f"Starting to scrape {len(prefectures_to_scrape)} prefecture(s) for {len(keywords)} keyword(s)")
         self.stdout.write(f"Keywords: {', '.join(keywords)}")
         logger.info(f"Starting scraping process - {len(prefectures_to_scrape)} prefectures, {len(keywords)} keywords")
-        
-        all_results = []
+
+        # Track counts only, not full results (memory efficient)
         results_by_keyword = {}
         total_operations = len(prefectures_to_scrape) * len(keywords)
         current_operation = 0
+        total_items_count = 0
 
         try:
             for keyword in keywords:
                 self.stdout.write(f"\n{'='*60}")
                 self.stdout.write(f"SEARCHING FOR: {keyword.upper()}")
                 self.stdout.write(f"{'='*60}")
-                
-                keyword_results = []
+
+                keyword_total_count = 0
                 keyword_prefecture_results = {}
-                
+
                 for prefecture in prefectures_to_scrape:
                     current_operation += 1
                     progress = f"[{current_operation}/{total_operations}]"
-                    
+
                     self.stdout.write(f"\n{progress} Scraping {prefecture['name']} ({prefecture['region']}) - {prefecture['domain']}")
                     self.stdout.write(f"Keyword: {keyword}")
-                    
+
                     try:
                         logger.info(f"Starting scrape for {prefecture['name']} with keyword '{keyword}'")
-                        # Scrape all results for this prefecture and keyword
-                        results = scrape_all_results(prefecture['domain'], keyword)
-                        
-                        if results:
-                            keyword_results.extend(results)
-                            keyword_prefecture_results[prefecture['name']] = {
-                                'prefecture': prefecture,
-                                'results': results,
-                                'count': len(results)
-                            }
-                            logger.info(f"Successfully scraped {len(results)} items from {prefecture['name']}")
+
+                        # Get count from database before scraping
+                        from scraper.models import GovernmentDocument
+                        before_count = GovernmentDocument.objects.filter(
+                            prefecture_name=prefecture['name']
+                        ).count()
+
+                        # Scrape and save to database (returns empty list to save memory)
+                        scrape_all_results(prefecture['domain'], keyword)
+
+                        # Get count after scraping to determine new items
+                        after_count = GovernmentDocument.objects.filter(
+                            prefecture_name=prefecture['name']
+                        ).count()
+
+                        items_added = after_count - before_count
+                        keyword_total_count += items_added
+                        total_items_count += items_added
+
+                        # Store only metadata, not full results
+                        keyword_prefecture_results[prefecture['name']] = {
+                            'prefecture': prefecture,
+                            'count': items_added
+                        }
+
+                        if items_added > 0:
+                            logger.info(f"Successfully scraped {items_added} items from {prefecture['name']}")
                             self.stdout.write(
-                                self.style.SUCCESS(f'  ✓ Found {len(results)} items')
+                                self.style.SUCCESS(f'  ✓ Found {items_added} items')
                             )
                         else:
-                            logger.warning(f"No results found for {prefecture['name']} with keyword '{keyword}'")
+                            logger.warning(f"No new items found for {prefecture['name']} with keyword '{keyword}'")
                             self.stdout.write(
-                                self.style.WARNING('  ⚠ No results found')
+                                self.style.WARNING('  ⚠ No new items found')
                             )
-                            keyword_prefecture_results[prefecture['name']] = {
-                                'prefecture': prefecture,
-                                'results': [],
-                                'count': 0
-                            }
-                            
+
                     except Exception as e:
                         self.stdout.write(
                             self.style.ERROR(f'  ✗ Error scraping {prefecture["name"]}: {e}')
                         )
                         keyword_prefecture_results[prefecture['name']] = {
                             'prefecture': prefecture,
-                            'results': [],
                             'count': 0,
                             'error': str(e)
                         }
                         continue
 
-                # Store results for this keyword
+                # Store only metadata for this keyword
                 results_by_keyword[keyword] = {
-                    'total_items': len(keyword_results),
-                    'prefectures': keyword_prefecture_results,
-                    'all_results': keyword_results
+                    'total_items': keyword_total_count,
+                    'prefectures': keyword_prefecture_results
                 }
-                all_results.extend(keyword_results)
 
             # Display comprehensive summary
             self.stdout.write("\n" + "="*80)
@@ -211,17 +225,17 @@ class Command(BaseCommand):
             self.stdout.write(f"Total prefectures scraped: {len(prefectures_to_scrape)}")
             self.stdout.write(f"Total keywords searched: {len(keywords)}")
             self.stdout.write(f"Total operations: {total_operations}")
-            self.stdout.write(f"Total items found: {len(all_results)}")
-            
+            self.stdout.write(f"Total items found: {total_items_count}")
+
             # Summary by keyword
             self.stdout.write("\n--- RESULTS BY KEYWORD ---")
             for keyword, data in results_by_keyword.items():
                 self.stdout.write(f"{keyword}: {data['total_items']} items")
-                
+
                 # Show top prefectures for this keyword
                 prefecture_counts = [(name, info['count']) for name, info in data['prefectures'].items()]
                 prefecture_counts.sort(key=lambda x: x[1], reverse=True)
-                
+
                 self.stdout.write(f"  Top prefectures for '{keyword}':")
                 for name, count in prefecture_counts[:5]:  # Show top 5
                     if count > 0:
@@ -233,34 +247,33 @@ class Command(BaseCommand):
                 prefecture_name = prefecture['name']
                 total_for_prefecture = 0
                 keyword_breakdown = []
-                
+
                 for keyword, data in results_by_keyword.items():
                     if prefecture_name in data['prefectures']:
                         count = data['prefectures'][prefecture_name]['count']
                         total_for_prefecture += count
                         if count > 0:
                             keyword_breakdown.append(f"{keyword}: {count}")
-                
+
                 if total_for_prefecture > 0:
                     self.stdout.write(f"{prefecture_name}: {total_for_prefecture} total items")
                     if keyword_breakdown:
                         self.stdout.write(f"  Breakdown: {', '.join(keyword_breakdown)}")
 
-            # Save or display results
+            # Save or display results (metadata only, not full data)
             if output_format == 'json':
                 output_data = json.dumps({
                     'summary': {
                         'total_prefectures': len(prefectures_to_scrape),
                         'total_keywords': len(keywords),
                         'total_operations': total_operations,
-                        'total_items': len(all_results),
+                        'total_items': total_items_count,
                         'keywords': keywords
                     },
-                    'results_by_keyword': results_by_keyword,
-                    'all_results': all_results
+                    'results_by_keyword': results_by_keyword
                 }, indent=2, ensure_ascii=False)
             else:
-                # Pretty format
+                # Pretty format (metadata only)
                 output_data = format_results_pretty(results_by_keyword, keywords)
 
             # Display or save results

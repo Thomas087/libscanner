@@ -84,34 +84,31 @@ def scrape_animal_keywords_enhanced_task(self, task_id=None, keywords=None, regi
     
     logger.info(f"Scraping {len(prefectures_to_scrape)} prefecture(s) for {len(keywords)} keyword(s)")
 
-    all_results = []
+    # Track counts only, not full results (memory efficient)
     results_by_keyword = {}
     total_operations = len(prefectures_to_scrape) * len(keywords)
     current_operation = 0
-    
+    total_items_count = 0
+
     # Update total operations in database
     db_task.total_operations = total_operations
     db_task.save()
-    
+
     try:
         for keyword in keywords:
             logger.info(f"Processing keyword: {keyword}")
-            
-            keyword_results = []
+
+            keyword_total_count = 0
             keyword_prefecture_results = {}
-            
+
             for prefecture in prefectures_to_scrape:
                 current_operation += 1
                 progress = f"[{current_operation}/{total_operations}]"
-                
+
                 logger.info(f"{progress} Scraping {prefecture['name']} ({prefecture['region']}) - {prefecture['domain']}")
                 logger.info(f"Keyword: {keyword}")
-                
+
                 try:
-                    # Check if task has been revoked (simplified check)
-                    # Note: is_aborted() method may not be available in all Celery versions
-                    # We'll skip this check for now to avoid errors
-                    
                     # Update progress in database
                     db_task.update_progress(
                         current=current_operation,
@@ -119,7 +116,7 @@ def scrape_animal_keywords_enhanced_task(self, task_id=None, keywords=None, regi
                         prefecture=prefecture['name'],
                         keyword=keyword
                     )
-                    
+
                     # Update task state for Celery progress tracking
                     self.update_state(
                         state='PROGRESS',
@@ -131,78 +128,71 @@ def scrape_animal_keywords_enhanced_task(self, task_id=None, keywords=None, regi
                             'status': 'scraping'
                         }
                     )
-                    
+
                     logger.info(f"Starting scrape for {prefecture['name']} with keyword '{keyword}'")
-                    # Scrape all results for this prefecture and keyword
-                    results = scrape_all_results(prefecture['domain'], keyword)
-                    
-                    if results:
-                        keyword_results.extend(results)
-                        keyword_prefecture_results[prefecture['name']] = {
-                            'prefecture': prefecture,
-                            'results': results,
-                            'count': len(results)
+
+                    # Get count from database before scraping
+                    from scraper.models import GovernmentDocument
+                    before_count = GovernmentDocument.objects.filter(
+                        prefecture_name=prefecture['name']
+                    ).count()
+
+                    # Scrape and save to database (returns empty list to save memory)
+                    scrape_all_results(prefecture['domain'], keyword)
+
+                    # Get count after scraping to determine new items
+                    after_count = GovernmentDocument.objects.filter(
+                        prefecture_name=prefecture['name']
+                    ).count()
+
+                    items_added = after_count - before_count
+                    keyword_total_count += items_added
+                    total_items_count += items_added
+
+                    # Store only metadata, not full results
+                    keyword_prefecture_results[prefecture['name']] = {
+                        'prefecture': prefecture,
+                        'count': items_added
+                    }
+
+                    logger.info(f"Successfully scraped {items_added} items from {prefecture['name']}")
+
+                    # Save individual result to database
+                    ScrapingTaskResult.objects.update_or_create(
+                        task=db_task,
+                        prefecture_name=prefecture['name'],
+                        keyword=keyword,
+                        defaults={
+                            'region_name': prefecture['region'],
+                            'items_found': items_added
                         }
-                        logger.info(f"Successfully scraped {len(results)} items from {prefecture['name']}")
-                        
-                        # Save individual result to database
-                        ScrapingTaskResult.objects.update_or_create(
-                            task=db_task,
-                            prefecture_name=prefecture['name'],
-                            keyword=keyword,
-                            defaults={
-                                'region_name': prefecture['region'],
-                                'items_found': len(results)
-                            }
-                        )
-                    else:
-                        logger.warning(f"No results found for {prefecture['name']} with keyword '{keyword}'")
-                        keyword_prefecture_results[prefecture['name']] = {
-                            'prefecture': prefecture,
-                            'results': [],
-                            'count': 0
-                        }
-                        
-                        # Save zero result to database
-                        ScrapingTaskResult.objects.update_or_create(
-                            task=db_task,
-                            prefecture_name=prefecture['name'],
-                            keyword=keyword,
-                            defaults={
-                                'region_name': prefecture['region'],
-                                'items_found': 0
-                            }
-                        )
-                        
+                    )
+
                 except Exception as e:
                     logger.error(f"Error scraping {prefecture['name']}: {e}")
                     keyword_prefecture_results[prefecture['name']] = {
                         'prefecture': prefecture,
-                        'results': [],
                         'count': 0,
                         'error': str(e)
                     }
                     continue
-            
-            # Store results for this keyword
+
+            # Store only metadata for this keyword
             results_by_keyword[keyword] = {
-                'total_items': len(keyword_results),
-                'prefectures': keyword_prefecture_results,
-                'all_results': keyword_results
+                'total_items': keyword_total_count,
+                'prefectures': keyword_prefecture_results
             }
-            all_results.extend(keyword_results)
-        
-        # Prepare final results
+
+        # Prepare final results (metadata only)
         final_results = {
             'summary': {
                 'total_prefectures': len(prefectures_to_scrape),
                 'total_keywords': len(keywords),
                 'total_operations': total_operations,
-                'total_items': len(all_results),
+                'total_items': total_items_count,
                 'keywords': keywords
             },
-            'results_by_keyword': results_by_keyword,
-            'all_results': all_results
+            'results_by_keyword': results_by_keyword
         }
         
         # Save results to file if specified
@@ -220,14 +210,14 @@ def scrape_animal_keywords_enhanced_task(self, task_id=None, keywords=None, regi
         # Mark task as completed in database
         db_task.mark_completed(
             results_summary=final_results['summary'],
-            total_items=len(all_results)
+            total_items=total_items_count
         )
-        
-        logger.info(f"Enhanced task completed successfully. Found {len(all_results)} total items.")
-        
+
+        logger.info(f"Enhanced task completed successfully. Found {total_items_count} total items.")
+
         return {
             'status': 'SUCCESS',
-            'message': f'Scraping completed successfully. Found {len(all_results)} items.',
+            'message': f'Scraping completed successfully. Found {total_items_count} items.',
             'results': final_results,
             'task_id': db_task.id
         }
