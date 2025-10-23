@@ -553,6 +553,11 @@ def icpe_flag_for_item(title: str, description: str, link: Optional[str], domain
     if not link:
         return False
 
+    # Check if the link is directly to a PDF
+    if link.lower().endswith('.pdf'):
+        logger.debug(f"Direct PDF URL detected: {link}")
+        return check_pdfs_for_icpe([link])
+
     parsed = urlparse(link)
     same_domain = bool(parsed.netloc and domain and parsed.netloc.endswith(domain))
 
@@ -659,18 +664,18 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     logger.info(f"Negative keyword found in existing record, deleting immediately: '{card.title}' - {card.link}")
                     existing.delete()
                 else:
-                    logger.debug(f"Negative keyword found in new record, skipping: '{card.title}'")
+                    logger.info(f"Negative keyword found in new record, skipping: '{card.title}'")
                 continue
 
             #skip the record if it more than 1 year old
-            if date_updated < timezone.now() - timedelta(days=365):
-                logger.debug(f"Skipping record more than 1 year old: '{card.title}' - {card.link}")
+            if date_updated < timezone.now() - timedelta(days=90):
+                logger.info(f"Skipping record more than 1 year old: '{card.title}' - {card.link}")
                 continue
 
             # Check if record already exists with same link AND date_updated
             if existing and existing.date_updated == date_updated:
                 # Record is identical (same link + date_updated), skip it entirely
-                logger.debug(f"Skipping unchanged record (same link + date): '{card.title}' - {card.link}")
+                logger.info(f"Skipping unchanged record (same link + date): '{card.title}' - {card.link}")
                 continue
 
             # Only check ICPE status if we're creating or updating a record
