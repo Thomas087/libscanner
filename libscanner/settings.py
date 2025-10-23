@@ -186,8 +186,31 @@ except ImportError:
     pass
 
 # Celery Configuration
-# Use REDIS_URL for Heroku, fallback to localhost for development
-REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+# Use proper Redis URL parsing for Heroku compatibility
+import urllib.parse
+
+def get_redis_url():
+    """Get Redis URL with proper parsing for Heroku."""
+    redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+    
+    # For Heroku Redis, ensure proper URL format
+    if redis_url.startswith('redis://'):
+        try:
+            parsed = urllib.parse.urlparse(redis_url)
+            # Reconstruct URL with proper components for Heroku
+            if parsed.password:
+                # Heroku Redis format: redis://:password@hostname:port/db
+                return f"redis://:{parsed.password}@{parsed.hostname}:{parsed.port}{parsed.path}"
+            else:
+                # Local development format
+                return redis_url
+        except Exception:
+            # Fallback to original URL if parsing fails
+            return redis_url
+    return redis_url
+
+# Get properly formatted Redis URL
+REDIS_URL = get_redis_url()
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
 

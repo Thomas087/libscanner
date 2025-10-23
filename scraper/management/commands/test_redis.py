@@ -18,21 +18,24 @@ class Command(BaseCommand):
         self.stdout.write(f"Redis URL: {redis_url}")
         
         try:
-            # Test basic Redis connection
-            r = redis.from_url(redis_url)
-            r.ping()
-            self.stdout.write(self.style.SUCCESS("✓ Redis connection successful"))
+            # Test Redis connection using proper Heroku method
+            from libscanner.redis_connection import get_redis_connection, test_redis_connection
             
-            # Test set/get
-            r.set('test_key', 'test_value')
-            value = r.get('test_key')
-            if value == b'test_value':
-                self.stdout.write(self.style.SUCCESS("✓ Redis set/get test successful"))
+            # Test connection
+            success, message = test_redis_connection()
+            if success:
+                self.stdout.write(self.style.SUCCESS("✓ Redis connection successful"))
+                self.stdout.write(f"  {message}")
             else:
-                self.stdout.write(self.style.ERROR("✗ Redis set/get test failed"))
+                self.stdout.write(self.style.ERROR(f"✗ Redis connection failed: {message}"))
+                return False
             
-            # Clean up
-            r.delete('test_key')
+            # Get Redis info
+            r = get_redis_connection()
+            info = r.info()
+            self.stdout.write(f"  Redis version: {info.get('redis_version', 'Unknown')}")
+            self.stdout.write(f"  Memory used: {info.get('used_memory_human', 'Unknown')}")
+            self.stdout.write(f"  Connected clients: {info.get('connected_clients', 'Unknown')}")
             
         except Exception as e:
             self.stdout.write(self.style.ERROR(f"✗ Redis connection failed: {e}"))
