@@ -689,25 +689,3 @@ def scrape_all_results(domain: str, keyword: str) -> List[Dict[str, Any]]:
         logger.info(f"Removed {removed_count} negative-keyword documents (last {CONFIG.cleanup_window_days} days).")
 
     return [card.__dict__ for card in all_cards]
-
-
-def scrape_generic(url: str) -> List[Dict[str, Any]]:
-    """
-    Generic scraper for any URL (no DB save, no prefecture context).
-    Returns list of dicts for compatibility.
-    """
-    try:
-        rsp = _requester.get(url, timeout=CONFIG.request_timeout)
-        soup = BeautifulSoup(rsp.content, "html.parser")
-        parsed = urlparse(url)
-        domain = parsed.netloc.replace("www.", "") if parsed.netloc else None
-        fr_cards = soup.find_all("div", class_="fr-card")
-        results: List[ScrapedCard] = []
-        for card in fr_cards:
-            sc = extract_card_data(card, domain)
-            if sc:
-                results.append(sc)
-        return [c.__dict__ for c in results]
-    except Exception as e:
-        logger.error(f"Error while scraping {url}: {e}")
-        return []

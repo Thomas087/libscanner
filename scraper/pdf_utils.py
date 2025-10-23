@@ -97,48 +97,6 @@ def benchmark_pdf_extraction(
     return results
 
 
-def extract_text_fast(pdf_content: bytes) -> str:
-    """
-    Fast PDF text extraction using PyMuPDF with PyPDF2 fallback.
-
-    Args:
-        pdf_content (bytes): PDF content as bytes
-
-    Returns:
-        str: Extracted text content
-    """
-    try:
-        # Try PyMuPDF first (much faster)
-        doc = fitz.open(stream=pdf_content, filetype="pdf")
-        text_content = ""
-
-        for page_num in range(doc.page_count):
-            page = doc[page_num]
-            text_content += page.get_text() + "\n"
-
-        doc.close()
-        return text_content
-
-    except Exception as e:
-        logger.warning(f"PyMuPDF failed, falling back to PyPDF2: {e}")
-
-        # Fallback to PyPDF2
-        try:
-            pdf_file = io.BytesIO(pdf_content)
-            pdf_reader = PyPDF2.PdfReader(pdf_file)
-            text_content = ""
-
-            for page_num in range(len(pdf_reader.pages)):
-                page = pdf_reader.pages[page_num]
-                text_content += page.extract_text() + "\n"
-
-            return text_content
-
-        except Exception as fallback_error:
-            logger.error(f"Both PyMuPDF and PyPDF2 failed: {fallback_error}")
-            return ""
-
-
 def get_pdf_info(pdf_content: bytes) -> Dict[str, Any]:
     """
     Get PDF metadata and information.

@@ -6,7 +6,7 @@ import logging
 from django.core.management.base import BaseCommand, CommandError
 from scraper.scraper import scrape_all_results
 from scraper.constants import PREFECTURES, get_prefectures_by_region, get_all_regions
-from scraper.tasks import scrape_animal_keywords_task
+from scraper.utils import format_results_pretty
 
 logger = logging.getLogger('scraper')
 
@@ -125,67 +125,10 @@ class Command(BaseCommand):
                 raise CommandError(f'No prefecture found with name: {prefecture_filter}')
 
         if use_async:
-            return self._run_async_scraping(keywords, region_filter, prefecture_filter, output_file, output_format)
+            raise CommandError('Async mode is no longer supported. Please use the Django admin interface to start async scraping tasks.')
         else:
             return self._run_sync_scraping(keywords, region_filter, prefecture_filter, output_file, output_format, prefectures_to_scrape)
 
-    def _format_results_pretty(self, results_by_keyword, keywords):
-        """Format results in a human-readable way."""
-        output = []
-        output.append("=" * 100)
-        output.append("ANIMAL KEYWORDS SCRAPING RESULTS")
-        output.append("=" * 100)
-        
-        for keyword, data in results_by_keyword.items():
-            output.append(f"\n--- KEYWORD: {keyword.upper()} ---")
-            output.append(f"Total items found: {data['total_items']}")
-            
-            # Show results by prefecture for this keyword
-            for prefecture_name, prefecture_data in data['prefectures'].items():
-                prefecture = prefecture_data['prefecture']
-                results = prefecture_data['results']
-                count = prefecture_data['count']
-                
-                if count > 0:
-                    output.append(f"\n  {prefecture['name']} ({prefecture['region']}): {count} items")
-                    
-                    # Show first 3 items as examples
-                    for i, item in enumerate(results[:3], 1):
-                        output.append(f"    Item {i}:")
-                        if 'title' in item:
-                            output.append(f"      Title: {item['title']}")
-                        if 'link' in item:
-                            output.append(f"      Link: {item['link']}")
-                        if 'description' in item:
-                            output.append(f"      Description: {item['description'][:100]}...")
-                    
-                    if len(results) > 3:
-                        output.append(f"    ... and {len(results) - 3} more items")
-                else:
-                    output.append(f"\n  {prefecture['name']} ({prefecture['region']}): No results")
-        
-        output.append("\n" + "=" * 100)
-        return "\n".join(output)
-
-    def _run_async_scraping(self, keywords, region_filter, prefecture_filter, output_file, output_format):
-        """Run scraping asynchronously using Celery."""
-        self.stdout.write("Starting asynchronous scraping task...")
-        
-        # Start the Celery task
-        task = scrape_animal_keywords_task.delay(
-            keywords=keywords,
-            region_filter=region_filter,
-            prefecture_filter=prefecture_filter,
-            output_file=output_file,
-            output_format=output_format
-        )
-        
-        self.stdout.write(f"Task started with ID: {task.id}")
-        self.stdout.write("You can check the task status using:")
-        self.stdout.write(f"  python manage.py scrape_animal_keywords --task-id {task.id}")
-        self.stdout.write("\nTask is running in the background...")
-        
-        return task.id
 
     def _run_sync_scraping(self, keywords, region_filter, prefecture_filter, output_file, output_format, prefectures_to_scrape):
         """Run scraping synchronously (original behavior)."""
@@ -318,7 +261,7 @@ class Command(BaseCommand):
                 }, indent=2, ensure_ascii=False)
             else:
                 # Pretty format
-                output_data = self._format_results_pretty(results_by_keyword, keywords)
+                output_data = format_results_pretty(results_by_keyword, keywords)
 
             # Display or save results
             if output_file:
