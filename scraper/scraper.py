@@ -745,10 +745,8 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
             else:
                 full_page_text = extract_text_from_pdf(card.link)
 
-            # Only check ICPE status if we're creating or updating a record
-            logger.debug(f"Checking ICPE status for: '{card.title}' - {card.link}")
-            is_icpe = icpe_flag_for_item(card.title, card.description, card.link, domain)
-            logger.debug(f"ICPE check result for '{card.title}': {is_icpe}")
+            # We no longer check for ICPE status for now
+            is_icpe = False
 
             # Generate a summary of the full page text
             document_info = get_document_info(full_page_text)
