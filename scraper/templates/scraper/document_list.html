@@ -124,6 +124,43 @@
             background: #4b5563;
         }
 
+        .document-type-filters {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 1rem;
+        }
+
+        .filter-toggle {
+            padding: 0.5rem 1rem;
+            border: 2px solid #d1d5db;
+            border-radius: 8px;
+            background: white;
+            color: #374151;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .filter-toggle:hover {
+            border-color: #3b82f6;
+            color: #3b82f6;
+        }
+
+        .filter-toggle.active {
+            background: #3b82f6;
+            border-color: #3b82f6;
+            color: white;
+        }
+
+        .filter-toggle.active:hover {
+            background: #2563eb;
+            border-color: #2563eb;
+        }
+
         .results-info {
             background: white;
             border-radius: 8px;
@@ -202,10 +239,13 @@
         .document-description {
             color: #4b5563;
             font-size: 0.9rem;
-            white-space: nowrap;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
             overflow: hidden;
-            text-overflow: ellipsis;
             margin-top: 0.25rem;
+            line-height: 1.4;
+            word-break: break-word;
         }
 
         .document-date {
@@ -332,14 +372,36 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>Liste de documents préfecturaux ICPE relatifs à l'élevage animal</h1>
+            <h1>Liste de documents préfecturaux relatifs à l'élevage animal</h1>
             <p>Ces documents sont extraits des sites des préfectures et classés par ordre chronologique</p>
             <p>Notez que ce site est un prototype et que la liste n'est ni précise ni exhaustive</p>
         </div>
 
         <div class="filters">
             <h3>Filtres</h3>
+            
+            <!-- Document Type Filters -->
+            <div class="document-type-filters">
+                <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={% if show_intensive %}false{% else %}true{% endif %}&other_animal={{ show_other_animal|yesno:'true,false' }}&other_docs={{ show_other_docs|yesno:'true,false' }}" 
+                   class="filter-toggle {% if show_intensive %}active{% endif %}">
+                    Élevage intensif
+                </a>
+                <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={{ show_intensive|yesno:'true,false' }}&other_animal={% if show_other_animal %}false{% else %}true{% endif %}&other_docs={{ show_other_docs|yesno:'true,false' }}" 
+                   class="filter-toggle {% if show_other_animal %}active{% endif %}">
+                    Autres élevages
+                </a>
+                <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={{ show_intensive|yesno:'true,false' }}&other_animal={{ show_other_animal|yesno:'true,false' }}&other_docs={% if show_other_docs %}false{% else %}true{% endif %}" 
+                   class="filter-toggle {% if show_other_docs %}active{% endif %}">
+                    Autres documents
+                </a>
+            </div>
+            
             <form method="get" id="filter-form">
+                <!-- Hidden inputs to preserve document type filters -->
+                <input type="hidden" name="intensive" value="{{ show_intensive|yesno:'true,false' }}">
+                <input type="hidden" name="other_animal" value="{{ show_other_animal|yesno:'true,false' }}">
+                <input type="hidden" name="other_docs" value="{{ show_other_docs|yesno:'true,false' }}">
+                
                 <div class="filter-row">
                     <div class="filter-group">
                         <label for="department">Département</label>
@@ -390,10 +452,26 @@
                                 {% if document.region_name %}
                                     <span>🗺️ {{ document.region_name }}</span>
                                 {% endif %}
+                                {% if document.is_animal_project %}
+                                    <span>🐄 Élevage</span>
+                                {% endif %}
+                                {% if document.is_intensive_farming %}
+                                    <span>⚡ Intensif</span>
+                                {% endif %}
+                                {% if document.animal_type %}
+                                    <span>🐷 {{ document.animal_type }}</span>
+                                {% endif %}
+                                {% if document.animal_number %}
+                                    <span>📊 {{ document.animal_number }} animaux</span>
+                                {% endif %}
                             </div>
-                            {% if document.description %}
+                            {% if document.summary %}
                                 <div class="document-description">
-                                    {{ document.description|truncatewords:15 }}
+                                    {{ document.summary }}
+                                </div>
+                            {% elif document.description %}
+                                <div class="document-description">
+                                    {{ document.description }}
                                 </div>
                             {% endif %}
                         </div>
@@ -412,8 +490,8 @@
             {% if page_obj.has_other_pages %}
                 <div class="pagination">
                     {% if page_obj.has_previous %}
-                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}page=1">&laquo; Première</a>
-                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}page={{ page_obj.previous_page_number }}">Précédente</a>
+                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={{ show_intensive|yesno:'true,false' }}&other_animal={{ show_other_animal|yesno:'true,false' }}&other_docs={{ show_other_docs|yesno:'true,false' }}&page=1">&laquo; Première</a>
+                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={{ show_intensive|yesno:'true,false' }}&other_animal={{ show_other_animal|yesno:'true,false' }}&other_docs={{ show_other_docs|yesno:'true,false' }}&page={{ page_obj.previous_page_number }}">Précédente</a>
                     {% endif %}
 
                     <span class="current">
@@ -421,8 +499,8 @@
                     </span>
 
                     {% if page_obj.has_next %}
-                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}page={{ page_obj.next_page_number }}">Suivante</a>
-                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}page={{ page_obj.paginator.num_pages }}">Dernière &raquo;</a>
+                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={{ show_intensive|yesno:'true,false' }}&other_animal={{ show_other_animal|yesno:'true,false' }}&other_docs={{ show_other_docs|yesno:'true,false' }}&page={{ page_obj.next_page_number }}">Suivante</a>
+                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={{ show_intensive|yesno:'true,false' }}&other_animal={{ show_other_animal|yesno:'true,false' }}&other_docs={{ show_other_docs|yesno:'true,false' }}&page={{ page_obj.paginator.num_pages }}">Dernière &raquo;</a>
                     {% endif %}
                 </div>
             {% endif %}
