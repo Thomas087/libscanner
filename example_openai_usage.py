@@ -16,8 +16,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # Load environment variables
 load_dotenv()
 
-# Import the OpenAI function
-from llm_api.views import call_openai_api
+# Import the OpenAI function and example models
+from llm_api.views import call_openai_api, CalendarEvent, DocumentSummary, CodeAnalysis
 
 
 def main():
@@ -54,6 +54,74 @@ def main():
         response = call_openai_api(prompt, model="gpt-4o-mini")
         print(f"Prompt: {prompt}")
         print(f"Response: {response}")
+        print()
+    except Exception as e:
+        print(f"Error: {e}")
+        print()
+    
+    # Example 4: Structured Response - Calendar Event (as per documentation)
+    print("=== Example 4: Structured Response - Calendar Event ===")
+    try:
+        prompt = "Alice and Bob are going to a science fair on Friday."
+        system_message = "Extract the event information."
+        event = call_openai_api(
+            prompt=prompt,
+            model="gpt-4o-mini",
+            response_format=CalendarEvent,
+            system_message=system_message
+        )
+        print(f"Prompt: {prompt}")
+        print(f"System: {system_message}")
+        print(f"Structured Response:")
+        print(f"  Name: {event.name}")
+        print(f"  Date: {event.date}")
+        print(f"  Participants: {event.participants}")
+        print()
+    except Exception as e:
+        print(f"Error: {e}")
+        print()
+    
+    # Example 5: Structured Response - Document Summary
+    print("=== Example 5: Structured Response - Document Summary ===")
+    try:
+        prompt = "Summarize this article: 'The Future of AI in Healthcare: A comprehensive look at how artificial intelligence is revolutionizing medical diagnosis, treatment planning, and patient care. Key benefits include improved accuracy, reduced costs, and better patient outcomes. However, challenges remain in data privacy, regulatory compliance, and ensuring equitable access to AI-powered healthcare solutions.'"
+        system_message = "Analyze and summarize the document with key points and sentiment."
+        summary = call_openai_api(
+            prompt=prompt,
+            model="gpt-4o-mini",
+            response_format=DocumentSummary,
+            system_message=system_message
+        )
+        print(f"Prompt: {prompt[:100]}...")
+        print(f"System: {system_message}")
+        print(f"Structured Response:")
+        print(f"  Title: {summary.title}")
+        print(f"  Summary: {summary.summary}")
+        print(f"  Key Points: {summary.key_points}")
+        print(f"  Sentiment: {summary.sentiment}")
+        print()
+    except Exception as e:
+        print(f"Error: {e}")
+        print()
+    
+    # Example 6: Structured Response - Code Analysis
+    print("=== Example 6: Structured Response - Code Analysis ===")
+    try:
+        prompt = "Analyze this Python code: def fibonacci(n): if n <= 1: return n; return fibonacci(n-1) + fibonacci(n-2)"
+        system_message = "Analyze the code for language, complexity, issues, and provide suggestions."
+        analysis = call_openai_api(
+            prompt=prompt,
+            model="gpt-4o-mini",
+            response_format=CodeAnalysis,
+            system_message=system_message
+        )
+        print(f"Prompt: {prompt}")
+        print(f"System: {system_message}")
+        print(f"Structured Response:")
+        print(f"  Language: {analysis.language}")
+        print(f"  Complexity: {analysis.complexity}")
+        print(f"  Issues: {analysis.issues}")
+        print(f"  Suggestions: {analysis.suggestions}")
         print()
     except Exception as e:
         print(f"Error: {e}")

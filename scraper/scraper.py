@@ -37,6 +37,8 @@ from .constants import get_prefecture_by_domain
 from .models import GovernmentDocument, NegativeKeyword
 
 from llm_api.views import call_mistral_api, call_openai_api
+from pydantic import BaseModel
+import tiktoken
 
 # ------------------------------------------------------------------------------
 # Logging
@@ -618,12 +620,54 @@ def extract_card_data(card_element, domain: Optional[str] = None) -> Optional[Sc
 
 # Summary generation using A.I.
 
-def generate_summary(full_page_text: str) -> str:
-    """Generate a summary of the full page text using A.I."""
-    prompt = f"Résume le texte suivant en français (uniquement en français) et en 100 mots maximum. Réponds avec le résumé du texte et rien d'autre. Voici le texte à résumer: {full_page_text}"
+def trim_text(full_page_text: str, max_tokens: int = 200_000, model: str = "gpt-5-nano") -> str:
+    """Trim text to fit within a max token limit."""
+    # Load the tokenizer for the model you are using
+    encoding = tiktoken.encoding_for_model(model)
+
+    # Encode the text into tokens
+    tokens = encoding.encode(full_page_text)
+
+    # Truncate if needed
+    if len(tokens) > max_tokens:
+        tokens = tokens[:max_tokens]
+
+    # Decode back into a string
+    trimmed_text = encoding.decode(tokens)
+    return trimmed_text
+
+def get_document_info(full_page_text: str) -> str:
+    """Get document info using A.I."""
+    trimmed_text = trim_text(full_page_text)
+    prompt = f"""
+    Analyse le texte ci-dessous et renvoie un JSON avec les champs suivants :
+    - summary: Un résumé du texte en français (uniquement en français) et en 100 mots maximum.
+    - is_animal_project: le booléen indiquant si le texte est lié à un projet d'élevage animal
+    - animal_type: le type d'animal (ovin, caprin, bovin, porcin, volaille) si le projet est un projet d'élevage animal, sinon renvoie None
+    - animal_number: le nombre d'animaux (nombre) si le projet est un projet d'élevage animal si il est précisé, sinon renvoie None
+    Voici le texte à analyser :
+    {trimmed_text}"""
+
+    class PrefectureDocumentSummary(BaseModel):
+        summary: str
+        is_animal_project: bool
+        animal_type: Optional[str] = None
+        animal_number: Optional[int] = None
+
     # summary = call_mistral_api(prompt)
-    summary = call_openai_api(prompt)
-    return summary
+    document_info = call_openai_api(prompt, response_format=PrefectureDocumentSummary)
+    return document_info
+
+
+# Check if the project is related to intensive farming based on summary
+
+def check_if_intensive_farming(summary: str) -> bool:
+    """Check if the project is related to intensive farming based on summary"""
+    prompt = f"""
+    Analyse le texte ci-dessous et renvoie un booléen indiquant si le projet est lié à l'agriculture intensive.
+    Voici le texte à analyser :
+    {summary}"""
+    return call_openai_api(prompt, response_format=bool)
 
 # ------------------------------------------------------------------------------
 # Persistence
@@ -710,11 +754,104 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
             print(full_page_text[:100])
             
             # Generate a summary of the full page text
-            if is_icpe and full_page_text:
-                summary = generate_summary(full_page_text)
-                logger.info(f"Summary generated for '{card.title}': {summary}")
-            else :
-                summary = None
+            document_info = get_document_info(full_page_text)
+            summary = document_info.summary
+            is_animal_project = document_info.is_animal_project
+            animal_type = document_info.animal_type
+            animal_number = document_info.animal_number
+            logger.info(f"Summary generated for '{card.title}': {summary}")
+
+            if is_animal_project:
+                is_intensive_farming = check_if_intensive_farming(summary)
+                logger.info(f"Intensive farming check result for '{card.title}': {is_intensive_farming}")
+            else:
+                is_intensive_farming = False
+
+            # If the project is intensive farming, do a more detailed search of document_info by including the pdf links in the full page text
+
+            # If the project is intensive farming, do a more detailed search of document_info
+            # by including the PDF contents linked from the detail page and re-run the analysis.
+            if is_intensive_farming:
+                try:
+                    # --- Hard limits for appended PDF text ---
+                    PER_PDF_CHAR_LIMIT = 200_000          # cap per PDF text chunk (reasonable upper bound)
+                    TOTAL_PDF_CHAR_BUDGET = 400_000       # total budget across all appended PDFs
+
+                    # Collect a few PDF links from the page (dedup + cap)
+                    linked_pdfs = extract_pdf_links_from_page(card.link)
+                    if linked_pdfs:
+                        pdf_sample = []
+                        seen = set()
+                        for u in linked_pdfs:
+                            u_norm = u.strip()
+                            if not u_norm or u_norm in seen:
+                                continue
+                            seen.add(u_norm)
+                            pdf_sample.append(u_norm)
+                            if len(pdf_sample) >= CONFIG.icpe_pdf_cap:
+                                break
+
+                        # Pull text from those PDFs (skip empties) under strict caps
+                        appended_texts: List[str] = []
+                        total_appended = 0
+                        for pdf_url in pdf_sample:
+                            if total_appended >= TOTAL_PDF_CHAR_BUDGET:
+                                break
+                            try:
+                                pdf_text = extract_text_from_pdf(pdf_url)
+                                if not pdf_text:
+                                    continue
+                                # Enforce per-PDF cap
+                                if len(pdf_text) > PER_PDF_CHAR_LIMIT:
+                                    pdf_text = pdf_text[:PER_PDF_CHAR_LIMIT]
+                                # Enforce overall budget
+                                remaining = TOTAL_PDF_CHAR_BUDGET - total_appended
+                                if remaining <= 0:
+                                    break
+                                if len(pdf_text) > remaining:
+                                    pdf_text = pdf_text[:remaining]
+
+                                appended_texts.append(pdf_text)
+                                total_appended += len(pdf_text)
+                            except Exception as pdf_err:
+                                logger.debug(f"Error extracting appended PDF text from {pdf_url}: {pdf_err}")
+                                continue
+
+                        if appended_texts:
+                            # Build enriched corpus
+                            enriched_text_parts = [
+                                "==== PAGE TEXT START ====",
+                                full_page_text or "",
+                                "==== PAGE TEXT END ====",
+                                "==== LINKED PDF TEXT START ====",
+                                "\n\n==== NEXT PDF ====\n\n".join(appended_texts),
+                                "==== LINKED PDF TEXT END ====",
+                            ]
+                            enriched_text = "\n\n".join(enriched_text_parts)
+
+                            # Explicitly trim to 200k tokens before analysis
+                            enriched_text = trim_text(enriched_text, max_tokens=200_000)
+
+                            # Re-run the same info extraction on the enriched text
+                            refined_info = get_document_info(enriched_text)
+
+                            # If refinement yields useful changes, adopt them
+                            if refined_info and isinstance(refined_info, type(document_info)):
+                                summary = refined_info.summary or summary
+                                is_animal_project = bool(refined_info.is_animal_project)
+                                animal_type = refined_info.animal_type or animal_type
+                                animal_number = refined_info.animal_number or animal_number
+                                logger.info(
+                                    f"Refined document info applied for '{card.title}' "
+                                    f"(animal_project={is_animal_project}, type={animal_type}, n={animal_number})"
+                                )
+                        else:
+                            logger.debug(f"No usable PDF text found to enrich '{card.title}'")
+                    else:
+                        logger.debug(f"No linked PDFs found on page to enrich '{card.title}'")
+
+                except Exception as refine_err:
+                    logger.warning(f"Refinement step failed for '{card.title}': {refine_err}")
 
             if existing:
                 # Record exists but has different date_updated or other fields changed
@@ -734,6 +871,8 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     existing.date_updated = date_updated
                     existing.full_page_text = full_page_text
                     existing.summary = summary
+                    existing.is_animal_project = is_animal_project
+                    existing.is_intensive_farming = is_intensive_farming
                     existing.is_icpe = is_icpe
                     if pref_name:
                         existing.prefecture_name = pref_name
@@ -755,6 +894,10 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     date_updated=date_updated,
                     full_page_text=full_page_text,
                     summary=summary,
+                    is_animal_project=is_animal_project,
+                    is_intensive_farming=is_intensive_farming,
+                    animal_type=animal_type,
+                    animal_number=animal_number,
                     prefecture_name=pref_name,
                     prefecture_code=pref_code,
                     region_name=region_name,

@@ -15,7 +15,12 @@ class GovernmentDocument(models.Model):
     link = models.URLField(max_length=2048, unique=True, help_text="URL to the document on the government website")
     date_updated = models.DateTimeField(help_text="Date when the document was last updated on the government website")
     is_icpe = models.BooleanField(default=False, help_text="Whether this document is related to ICPE (Installations Classées pour la Protection de l'Environnement)")
-    
+    is_animal_project = models.BooleanField(default=False, help_text="Whether this document is related to an animal project")
+    is_intensive_farming = models.BooleanField(default=False, help_text="Whether this document is related to intensive farming")
+    animal_type = models.CharField(max_length=100, blank=True, null=True, help_text="Type of animal if this document is related to an animal project")
+    animal_number = models.IntegerField(blank=True, null=True, help_text="Number of animals if this document is related to an animal project")
+
+
     # Prefecture information
     prefecture_name = models.CharField(max_length=100, blank=True, null=True, help_text="Name of the prefecture where this document was found")
     prefecture_code = models.CharField(max_length=10, blank=True, null=True, help_text="Code of the prefecture")
