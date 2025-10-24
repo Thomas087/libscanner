@@ -175,11 +175,20 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
     
     def animal_number_display(self, obj):
         """Display animal number with formatting."""
-        if obj.animal_number:
-            return format_html(
-                '<span style="color: #17a2b8; font-weight: bold;">{:,}</span>',
-                obj.animal_number
-            )
+        if obj.animal_number is not None:
+            try:
+                # Try to convert to int, handling both numeric and string values
+                number = int(float(str(obj.animal_number)))
+                return format_html(
+                    '<span style="color: #17a2b8; font-weight: bold;">{:,}</span>',
+                    number
+                )
+            except (ValueError, TypeError):
+                # If conversion fails, show the raw value or N/A
+                return format_html(
+                    '<span style="color: #6c757d;">{}</span>',
+                    str(obj.animal_number) if obj.animal_number else 'N/A'
+                )
         else:
             return format_html(
                 '<span style="color: #6c757d;">N/A</span>'
