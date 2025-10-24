@@ -47,11 +47,16 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
         'link_display',
         'is_recent_display',
         'is_icpe_display',
+        'full_page_text',
     ]
     
     fieldsets = (
         ('Document Information', {
             'fields': ('title', 'description', 'link_display')
+        }),
+        ('Content', {
+            'fields': ('summary', 'full_page_text'),
+            'classes': ('collapse',)
         }),
         ('Prefecture Information', {
             'fields': ('prefecture_name', 'prefecture_code', 'region_name')

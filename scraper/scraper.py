@@ -682,7 +682,11 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                 logger.info(f"Skipping unchanged record (same link + date): '{card.title}' - {card.link}")
                 continue
 
-            full_page_text = fetch_page_text(card.link)
+            # Check if the link is a pdf - if not, fetch the full page text, otherwise extract the text from the pdf
+            if not card.link.lower().endswith('.pdf'):
+                full_page_text = fetch_page_text(card.link)
+            else:
+                full_page_text = extract_text_from_pdf(card.link)
 
             # Only check ICPE status if we're creating or updating a record
             logger.debug(f"Checking ICPE status for: '{card.title}' - {card.link}")
