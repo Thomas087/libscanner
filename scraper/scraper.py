@@ -728,9 +728,9 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     logger.info(f"Negative keyword found in new record, skipping: '{card.title}'")
                 continue
 
-            #skip the record if it more than 1 year old
-            if date_updated < timezone.now() - timedelta(days=90):
-                logger.info(f"Skipping record more than 1 year old: '{card.title}' - {card.link}")
+            #skip the record if it more than 30 days
+            if date_updated < timezone.now() - timedelta(days=30):
+                logger.info(f"Skipping record more than 30 days old: '{card.title}' - {card.link}")
                 continue
 
             # Check if record already exists with same link AND date_updated
@@ -750,22 +750,10 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
             is_icpe = icpe_flag_for_item(card.title, card.description, card.link, domain)
             logger.debug(f"ICPE check result for '{card.title}': {is_icpe}")
 
-            print('is_icpe')
-            print(is_icpe)
-            # Print first 100 characters of full_page_text
-            print('full_page_text')
-            print(full_page_text[:100])
-            
             # Generate a summary of the full page text
             document_info = get_document_info(full_page_text)
-            print('document_info')
-            print(document_info)
             summary = document_info.summary
-            print('summary')
-            print(summary)
             is_animal_project = document_info.is_animal_project
-            print('is_animal_project')
-            print(is_animal_project)
             animal_type = document_info.animal_type
             animal_number = document_info.animal_number
             logger.info(f"Summary generated for '{card.title}': {summary}")

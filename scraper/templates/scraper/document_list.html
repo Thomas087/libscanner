@@ -327,6 +327,11 @@
             color: #374151;
         }
 
+        /* Animal type styling */
+        .animal-type {
+            position: relative;
+        }
+
         @media (max-width: 768px) {
             .container {
                 padding: 1rem;
@@ -453,13 +458,13 @@
                                     <span>🗺️ {{ document.region_name }}</span>
                                 {% endif %}
                                 {% if document.is_animal_project %}
-                                    <span>🐄 Élevage</span>
+                                    <span>🏢 Élevage</span>
                                 {% endif %}
                                 {% if document.is_intensive_farming %}
                                     <span>⚡ Intensif</span>
                                 {% endif %}
                                 {% if document.animal_type %}
-                                    <span>🐷 {{ document.animal_type }}</span>
+                                    <span class="animal-type" data-original="{{ document.animal_type }}">{{ document.animal_type }}</span>
                                 {% endif %}
                                 {% if document.animal_number %}
                                     <span>📊 {{ document.animal_number }} animaux</span>
@@ -523,6 +528,49 @@
             if (e.key === 'Enter') {
                 document.getElementById('filter-form').submit();
             }
+        });
+
+        // Replace non-species-specific terms with specific animal terms and add icons
+        document.addEventListener('DOMContentLoaded', function() {
+            const animalTerms = {
+                'Ovin': { term: 'moutons', icon: '🐑' },
+                'Caprin': { term: 'chèvres', icon: '🐐' },
+                'Bovin': { term: 'vaches', icon: '🐄' },
+                'Porcin': { term: 'cochons', icon: '🐷' },
+                'Volaille': { term: 'oiseaux', icon: '🐔' }
+            };
+
+            // Process all animal type spans
+            const animalTypeSpans = document.querySelectorAll('.animal-type');
+            animalTypeSpans.forEach(span => {
+                const originalText = span.getAttribute('data-original');
+                if (originalText && animalTerms[originalText]) {
+                    const replacement = animalTerms[originalText];
+                    span.innerHTML = `${replacement.icon} ${replacement.term}`;
+                }
+            });
+
+            // Also process any text content that might contain these terms
+            const textNodes = document.querySelectorAll('*');
+            textNodes.forEach(node => {
+                if (node.nodeType === Node.ELEMENT_NODE && node.textContent) {
+                    let text = node.innerHTML;
+                    let hasChanges = false;
+                    
+                    Object.keys(animalTerms).forEach(originalTerm => {
+                        const regex = new RegExp(`\\b${originalTerm}\\b`, 'gi');
+                        if (regex.test(text)) {
+                            const replacement = animalTerms[originalTerm];
+                            text = text.replace(regex, `${replacement.icon} ${replacement.term}`);
+                            hasChanges = true;
+                        }
+                    });
+                    
+                    if (hasChanges) {
+                        node.innerHTML = text;
+                    }
+                }
+            });
         });
     </script>
 </body>
