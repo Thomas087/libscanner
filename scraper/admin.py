@@ -48,6 +48,7 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
         'is_recent_display',
         'is_icpe_display',
         'full_page_text',
+        'summary_display',
     ]
     
     fieldsets = (
@@ -55,7 +56,7 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
             'fields': ('title', 'description', 'link_display')
         }),
         ('Content', {
-            'fields': ('summary', 'full_page_text'),
+            'fields': ('summary_display', 'summary', 'full_page_text'),
             'classes': ('collapse',)
         }),
         ('Prefecture Information', {
@@ -119,6 +120,29 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
             )
     is_icpe_display.short_description = "ICPE Status"
     is_icpe_display.admin_order_field = "is_icpe"
+    
+    def summary_display(self, obj):
+        """Display formatted summary of the document."""
+        if obj.summary:
+            # Truncate summary if it's too long for better display
+            summary_text = obj.summary
+            if len(summary_text) > 500:
+                summary_text = summary_text[:500] + "..."
+            
+            return format_html(
+                '<div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid #007bff; margin: 10px 0;">'
+                '<h4 style="margin-top: 0; color: #007bff; font-size: 16px;">📄 Document Summary</h4>'
+                '<p style="margin-bottom: 0; line-height: 1.5; color: #333;">{}</p>'
+                '</div>',
+                summary_text
+            )
+        else:
+            return format_html(
+                '<div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; border-left: 4px solid #ffc107; margin: 10px 0;">'
+                '<p style="margin: 0; color: #856404; font-style: italic;">⚠️ No summary available for this document</p>'
+                '</div>'
+            )
+    summary_display.short_description = "Document Summary"
     
     def get_queryset(self, request):
         """Optimize queryset for admin."""

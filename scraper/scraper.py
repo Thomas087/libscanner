@@ -36,6 +36,8 @@ from urllib3.util.retry import Retry
 from .constants import get_prefecture_by_domain
 from .models import GovernmentDocument, NegativeKeyword
 
+from llm_api.views import call_mistral_api, call_openai_api
+
 # ------------------------------------------------------------------------------
 # Logging
 # ------------------------------------------------------------------------------
@@ -614,6 +616,14 @@ def extract_card_data(card_element, domain: Optional[str] = None) -> Optional[Sc
         logger.error(f"Error extracting card data: {e}")
         return None
 
+# Summary generation using A.I.
+
+def generate_summary(full_page_text: str) -> str:
+    """Generate a summary of the full page text using A.I."""
+    prompt = f"Résume le texte suivant en français (uniquement en français) et en 100 mots maximum. Réponds avec le résumé du texte et rien d'autre. Voici le texte à résumer: {full_page_text}"
+    # summary = call_mistral_api(prompt)
+    summary = call_openai_api(prompt)
+    return summary
 
 # ------------------------------------------------------------------------------
 # Persistence
@@ -693,6 +703,19 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
             is_icpe = icpe_flag_for_item(card.title, card.description, card.link, domain)
             logger.debug(f"ICPE check result for '{card.title}': {is_icpe}")
 
+            print('is_icpe')
+            print(is_icpe)
+            # Print first 100 characters of full_page_text
+            print('full_page_text')
+            print(full_page_text[:100])
+            
+            # Generate a summary of the full page text
+            if is_icpe and full_page_text:
+                summary = generate_summary(full_page_text)
+                logger.info(f"Summary generated for '{card.title}': {summary}")
+            else :
+                summary = None
+
             if existing:
                 # Record exists but has different date_updated or other fields changed
                 changed = (
@@ -710,6 +733,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     existing.description = card.description
                     existing.date_updated = date_updated
                     existing.full_page_text = full_page_text
+                    existing.summary = summary
                     existing.is_icpe = is_icpe
                     if pref_name:
                         existing.prefecture_name = pref_name
@@ -730,6 +754,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     link=card.link,
                     date_updated=date_updated,
                     full_page_text=full_page_text,
+                    summary=summary,
                     prefecture_name=pref_name,
                     prefecture_code=pref_code,
                     region_name=region_name,
