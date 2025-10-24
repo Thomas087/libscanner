@@ -662,13 +662,16 @@ def get_document_info(full_page_text: str) -> str:
 # Check if the project is related to intensive farming based on summary
 
 def check_if_intensive_farming(summary: str) -> bool:
+
+    class IntensiveFarmingCheck(BaseModel):
+        is_intensive_farming: bool
+
     """Check if the project is related to intensive farming based on summary"""
     prompt = f"""
     Analyse le texte ci-dessous et renvoie un booléen indiquant si le projet est lié à l'agriculture intensive.
     Voici le texte à analyser :
     {summary}"""
-    return call_openai_api(prompt, response_format=bool)
-
+    return call_openai_api(prompt, response_format=IntensiveFarmingCheck)
 # ------------------------------------------------------------------------------
 # Persistence
 # ------------------------------------------------------------------------------
@@ -755,14 +758,20 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
             
             # Generate a summary of the full page text
             document_info = get_document_info(full_page_text)
+            print('document_info')
+            print(document_info)
             summary = document_info.summary
+            print('summary')
+            print(summary)
             is_animal_project = document_info.is_animal_project
+            print('is_animal_project')
+            print(is_animal_project)
             animal_type = document_info.animal_type
             animal_number = document_info.animal_number
             logger.info(f"Summary generated for '{card.title}': {summary}")
 
             if is_animal_project:
-                is_intensive_farming = check_if_intensive_farming(summary)
+                is_intensive_farming = check_if_intensive_farming(summary).is_intensive_farming
                 logger.info(f"Intensive farming check result for '{card.title}': {is_intensive_farming}")
             else:
                 is_intensive_farming = False
@@ -835,16 +844,14 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                             # Re-run the same info extraction on the enriched text
                             refined_info = get_document_info(enriched_text)
 
-                            # If refinement yields useful changes, adopt them
-                            if refined_info and isinstance(refined_info, type(document_info)):
-                                summary = refined_info.summary or summary
-                                is_animal_project = bool(refined_info.is_animal_project)
-                                animal_type = refined_info.animal_type or animal_type
-                                animal_number = refined_info.animal_number or animal_number
-                                logger.info(
-                                    f"Refined document info applied for '{card.title}' "
-                                    f"(animal_project={is_animal_project}, type={animal_type}, n={animal_number})"
-                                )
+                            summary = refined_info.summary
+                            is_animal_project = bool(refined_info.is_animal_project)
+                            animal_type = refined_info.animal_type
+                            animal_number = refined_info.animal_number
+                            logger.info(
+                                f"Refined document info applied for '{card.title}' "
+                                f"(animal_project={is_animal_project}, type={animal_type}, n={animal_number})"
+                            )
                         else:
                             logger.debug(f"No usable PDF text found to enrich '{card.title}'")
                     else:

@@ -20,12 +20,19 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
         'date_updated', 
         'is_recent_display',
         'is_icpe_display',
+        'is_animal_project_display',
+        'is_intensive_farming_display',
+        'animal_type_display',
+        'animal_number_display',
         'link_display', 
         'created_at'
     ]
     
     list_filter = [
         'is_icpe',
+        'is_animal_project',
+        'is_intensive_farming',
+        'animal_type',
         'prefecture_name',
         'region_name',
         'date_updated',
@@ -37,6 +44,7 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
         'title',
         'description',
         'link',
+        'animal_type',
         'prefecture_name',
         'region_name',
     ]
@@ -68,6 +76,10 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
         }),
         ('Status', {
             'fields': ('is_icpe', 'is_recent_display', 'is_icpe_display'),
+            'classes': ('collapse',)
+        }),
+        ('Animal Project Information', {
+            'fields': ('is_animal_project', 'is_intensive_farming', 'animal_type', 'animal_number'),
             'classes': ('collapse',)
         }),
     )
@@ -120,6 +132,60 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
             )
     is_icpe_display.short_description = "ICPE Status"
     is_icpe_display.admin_order_field = "is_icpe"
+    
+    def is_animal_project_display(self, obj):
+        """Display animal project status with color coding."""
+        if obj.is_animal_project:
+            return format_html(
+                '<span style="color: #28a745; font-weight: bold;">🐄 Animal Project</span>'
+            )
+        else:
+            return format_html(
+                '<span style="color: #6c757d;">General</span>'
+            )
+    is_animal_project_display.short_description = "Animal Project"
+    is_animal_project_display.admin_order_field = "is_animal_project"
+    
+    def is_intensive_farming_display(self, obj):
+        """Display intensive farming status with color coding."""
+        if obj.is_intensive_farming:
+            return format_html(
+                '<span style="color: #dc3545; font-weight: bold;">🏭 Intensive Farming</span>'
+            )
+        else:
+            return format_html(
+                '<span style="color: #6c757d;">Standard</span>'
+            )
+    is_intensive_farming_display.short_description = "Intensive Farming"
+    is_intensive_farming_display.admin_order_field = "is_intensive_farming"
+    
+    def animal_type_display(self, obj):
+        """Display animal type with formatting."""
+        if obj.animal_type:
+            return format_html(
+                '<span style="color: #007bff; font-weight: bold;">{}</span>',
+                obj.animal_type
+            )
+        else:
+            return format_html(
+                '<span style="color: #6c757d;">N/A</span>'
+            )
+    animal_type_display.short_description = "Animal Type"
+    animal_type_display.admin_order_field = "animal_type"
+    
+    def animal_number_display(self, obj):
+        """Display animal number with formatting."""
+        if obj.animal_number:
+            return format_html(
+                '<span style="color: #17a2b8; font-weight: bold;">{:,}</span>',
+                obj.animal_number
+            )
+        else:
+            return format_html(
+                '<span style="color: #6c757d;">N/A</span>'
+            )
+    animal_number_display.short_description = "Animal Count"
+    animal_number_display.admin_order_field = "animal_number"
     
     def summary_display(self, obj):
         """Display formatted summary of the document."""
