@@ -447,18 +447,22 @@ def head_pdf_ok(url: str) -> bool:
         logger.debug(f"HEAD failed for {url}: {e}")
         return True
 
+@ttl_cache(seconds=CONFIG.cache_ttl_seconds)
+def fetch_page_soup(url: str) -> BeautifulSoup:
+    rsp = _requester.get(url, timeout=CONFIG.request_timeout)
+    return BeautifulSoup(rsp.content, "html.parser")
+
 
 @ttl_cache(seconds=CONFIG.cache_ttl_seconds)
 def fetch_page_text(url: str) -> str:
-    rsp = _requester.get(url, timeout=CONFIG.request_timeout)
-    return BeautifulSoup(rsp.content, "html.parser").get_text()
+    soup = fetch_page_soup(url)
+    return soup.get_text()
 
 
 def extract_pdf_links_from_page(url: str) -> List[str]:
     """Extract all PDF links from a webpage (cross-domain allowed by request)."""
     try:
-        rsp = _requester.get(url, timeout=CONFIG.request_timeout)
-        soup = BeautifulSoup(rsp.content, "html.parser")
+        soup = fetch_page_soup(url)
         links: List[str] = []
         for a in soup.find_all("a", href=True):
             href = urljoin(url, a["href"])
@@ -678,6 +682,8 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                 logger.info(f"Skipping unchanged record (same link + date): '{card.title}' - {card.link}")
                 continue
 
+            full_page_text = fetch_page_text(card.link)
+
             # Only check ICPE status if we're creating or updating a record
             logger.debug(f"Checking ICPE status for: '{card.title}' - {card.link}")
             is_icpe = icpe_flag_for_item(card.title, card.description, card.link, domain)
@@ -699,6 +705,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     existing.title = card.title
                     existing.description = card.description
                     existing.date_updated = date_updated
+                    existing.full_page_text = full_page_text
                     existing.is_icpe = is_icpe
                     if pref_name:
                         existing.prefecture_name = pref_name
@@ -718,6 +725,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     description=card.description,
                     link=card.link,
                     date_updated=date_updated,
+                    full_page_text=full_page_text,
                     prefecture_name=pref_name,
                     prefecture_code=pref_code,
                     region_name=region_name,
@@ -790,8 +798,7 @@ def scrape_government_site(domain: str, keyword: str, offset: int = 0) -> List[S
     try:
         url = build_search_url(domain, keyword, offset)
         logger.info(f"Scraping page at offset {offset}: {url}")
-        rsp = _requester.get(url, timeout=CONFIG.request_timeout)
-        soup = BeautifulSoup(rsp.content, "html.parser")
+        soup = fetch_page_soup(url)
         cards = soup.find_all("div", class_="fr-card")
         logger.debug(f"Found {len(cards)} card elements on page")
         results: List[ScrapedCard] = []
