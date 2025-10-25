@@ -39,7 +39,6 @@ class ScraperConfig:
     request_timeout: int = 30
     head_timeout: int = 15
     max_retries: int = 3
-    icpe_pdf_cap: int = 5
     cleanup_window_days: int = 30
     page_step: int = 10
     max_offset: int = 1000

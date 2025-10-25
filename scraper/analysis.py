@@ -86,9 +86,6 @@ def contains_negative_keywords(title: str, description: str) -> bool:
     return False
 
 
-# ------------------------------------------------------------------------------
-# ICPE detection functions
-# ------------------------------------------------------------------------------
 
 
 # ------------------------------------------------------------------------------
@@ -188,7 +185,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
             # Query DB for this specific link only
             try:
                 existing = GovernmentDocument.objects.filter(link=card.link).only(
-                    'id', 'title', 'description', 'date_updated', 'is_icpe',
+                    'id', 'title', 'description', 'date_updated',
                     'prefecture_name', 'prefecture_code', 'region_name'
                 ).first()
             except Exception as db_error:
@@ -220,8 +217,6 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
             else:
                 full_page_text = extract_text_from_pdf(card.link)
 
-            # We no longer check for ICPE status for now
-            is_icpe = False
 
             # Generate a summary of the full page text
             document_info = get_document_info(full_page_text)
@@ -258,7 +253,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                                 continue
                             seen.add(u_norm)
                             pdf_sample.append(u_norm)
-                            if len(pdf_sample) >= CONFIG.icpe_pdf_cap:
+                            if len(pdf_sample) >= 5:  # PDF cap limit
                                 break
 
                         # Pull text from those PDFs (skip empties) under strict caps
@@ -327,13 +322,12 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     existing.title != card.title
                     or (existing.description or "") != (card.description or "")
                     or existing.date_updated != date_updated
-                    or existing.is_icpe != is_icpe
                     or (pref_name and existing.prefecture_name != pref_name)
                     or (pref_code and existing.prefecture_code != pref_code)
                     or (region_name and existing.region_name != region_name)
                 )
                 if changed:
-                    logger.info(f"Updating existing record: '{card.title}' - {card.link} (ICPE: {is_icpe})")
+                    logger.info(f"Updating existing record: '{card.title}' - {card.link}")
                     existing.title = card.title
                     existing.description = card.description
                     existing.date_updated = date_updated
@@ -341,7 +335,6 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     existing.summary = summary
                     existing.is_animal_project = is_animal_project
                     existing.is_intensive_farming = is_intensive_farming
-                    existing.is_icpe = is_icpe
                     if pref_name:
                         existing.prefecture_name = pref_name
                     if pref_code:
@@ -354,7 +347,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     logger.debug(f"No changes detected for existing record: '{card.title}'")
             else:
                 # Create new record immediately
-                logger.info(f"Creating new record: '{card.title}' - {card.link} (ICPE: {is_icpe})")
+                logger.info(f"Creating new record: '{card.title}' - {card.link}")
                 doc = GovernmentDocument(
                     title=card.title,
                     description=card.description,
@@ -369,7 +362,6 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     prefecture_name=pref_name,
                     prefecture_code=pref_code,
                     region_name=region_name,
-                    is_icpe=is_icpe,
                 )
                 doc.save()
                 saved += 1

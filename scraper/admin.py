@@ -19,7 +19,6 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
         'region_name',
         'date_updated', 
         'is_recent_display',
-        'is_icpe_display',
         'is_animal_project_display',
         'is_intensive_farming_display',
         'animal_type_display',
@@ -29,7 +28,6 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
     ]
     
     list_filter = [
-        'is_icpe',
         'is_animal_project',
         'is_intensive_farming',
         'animal_type',
@@ -54,7 +52,6 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
         'updated_at',
         'link_display',
         'is_recent_display',
-        'is_icpe_display',
         'full_page_text',
         'summary_display',
     ]
@@ -75,7 +72,7 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
         ('Status', {
-            'fields': ('is_icpe', 'is_recent_display', 'is_icpe_display'),
+            'fields': ('is_recent_display',),
             'classes': ('collapse',)
         }),
         ('Animal Project Information', {
@@ -120,18 +117,6 @@ class GovernmentDocumentAdmin(admin.ModelAdmin):
     is_recent_display.short_description = "Recent"
     is_recent_display.admin_order_field = "date_updated"
     
-    def is_icpe_display(self, obj):
-        """Display ICPE status with color coding."""
-        if obj.is_icpe:
-            return format_html(
-                '<span style="color: #d63384; font-weight: bold;">🔒 ICPE</span>'
-            )
-        else:
-            return format_html(
-                '<span style="color: #6c757d;">General</span>'
-            )
-    is_icpe_display.short_description = "ICPE Status"
-    is_icpe_display.admin_order_field = "is_icpe"
     
     def is_animal_project_display(self, obj):
         """Display animal project status with color coding."""

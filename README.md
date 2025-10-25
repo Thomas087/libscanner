@@ -17,7 +17,6 @@ Libscanner is designed to systematically scrape French government websites (pref
 
 - **Automated Scraping**: Searches across all French prefecture websites for relevant documents
 - **Document Management**: Stores document metadata including title, description, URL, and publication dates
-- **ICPE Classification**: Identifies documents related to ICPE (Installations Classées pour la Protection de l'Environnement)
 - **Negative Keywords**: Filters out irrelevant documents using configurable negative keywords
 - **Task Management**: Uses Celery for background processing with progress tracking
 - **PDF Processing**: Extracts text content from PDF documents
