@@ -2,7 +2,7 @@
 Management command to clean up documents containing negative keywords.
 """
 from django.core.management.base import BaseCommand
-from scraper.scraper import remove_documents_with_negative_keywords
+from scraper.analysis import remove_documents_with_negative_keywords
 
 
 class Command(BaseCommand):

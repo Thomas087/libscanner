@@ -1,16 +1,6 @@
 """
-Scraper module for extracting data from government websites.
-Clean, DRY, and efficient version:
-- Centralized config
-- Requester class with mounted retries (urllib3 Retry)
-- Precompiled constants/regex
-- Small parsing/url helpers
-- Dataclass for scraped cards
-- TTL caches for fetched page/PDF text
-- Declarative ICPE pipeline
-- Cross-domain PDF lookups preserved (by request)
-- DB prefetch + no-op update skips
-- Lightweight negative keyword cache
+Web scraping module for extracting data from government websites.
+Contains only the web scraping, HTTP requests, and HTML parsing functionality.
 """
 
 from __future__ import annotations
@@ -21,24 +11,17 @@ import os
 import random
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import PyPDF2
 import fitz  # PyMuPDF
 import requests
+import sys
 from bs4 import BeautifulSoup
-from django.utils import timezone
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .constants import get_prefecture_by_domain
-from .models import GovernmentDocument, NegativeKeyword
-
-from llm_api.views import call_mistral_api, call_openai_api
-from pydantic import BaseModel
-import tiktoken
 
 # ------------------------------------------------------------------------------
 # Logging
@@ -184,8 +167,6 @@ _requester = Requester()
 # Memory-aware TTL cache decorator
 # ------------------------------------------------------------------------------
 
-import sys
-
 def ttl_cache(seconds: int = CONFIG.cache_ttl_seconds, maxsize: int = CONFIG.cache_max_items):
     """
     Memory-aware TTL cache that evicts based on both time, count, and memory size.
@@ -206,7 +187,7 @@ def ttl_cache(seconds: int = CONFIG.cache_ttl_seconds, maxsize: int = CONFIG.cac
             """Estimate object size in bytes."""
             try:
                 return sys.getsizeof(obj)
-            except:
+            except Exception:
                 # Fallback for objects that don't support getsizeof
                 if isinstance(obj, str):
                     return len(obj.encode('utf-8'))
@@ -297,40 +278,6 @@ def ttl_cache(seconds: int = CONFIG.cache_ttl_seconds, maxsize: int = CONFIG.cac
 
 
 # ------------------------------------------------------------------------------
-# Precompiled constants & regex
-# ------------------------------------------------------------------------------
-
-ICPE_KEYWORDS: Tuple[str, ...] = tuple(
-    kw.lower()
-    for kw in (
-        "icpe",
-        "installations classées",
-        "installation classée",
-        "déclaration icpe",
-        "autorisation environnementale",
-        "régime d'autorisation",
-        "régime d'enregistrement",
-        "régime de déclaration",
-        "rubriques des activités",
-        "nomenclature des installations",
-        "code de l'environnement",
-        "déclaration initiale dicpe",
-        "dicpe",
-    )
-)
-
-import re
-
-DATE_PATTERNS: Tuple[re.Pattern, ...] = tuple(
-    re.compile(p, re.IGNORECASE)
-    for p in (
-        r"Mis à jour le (\d{1,2})/(\d{1,2})/(\d{4})",
-        r"Publié le (\d{1,2})/(\d{1,2})/(\d{4})",
-        r"Le (\d{1,2})/(\d{1,2})/(\d{4})",
-    )
-)
-
-# ------------------------------------------------------------------------------
 # HTML parsing & URL helpers
 # ------------------------------------------------------------------------------
 
@@ -368,65 +315,6 @@ class ScrapedCard:
     date_label: Optional[str] = None
     metadata: Optional[Dict[str, List[str]]] = None
     html_content: Optional[str] = None
-
-
-# ------------------------------------------------------------------------------
-# Keyword checks & date parse
-# ------------------------------------------------------------------------------
-
-def contains_icpe_keywords(text: Optional[str]) -> bool:
-    if not text:
-        return False
-    t = text.lower()
-    return any(k in t for k in ICPE_KEYWORDS)
-
-
-def parse_date_from_detail(detail_text: str) -> datetime:
-    for pat in DATE_PATTERNS:
-        m = pat.search(detail_text or "")
-        if m:
-            day, month, year = m.groups()
-            try:
-                return datetime(
-                    int(year), int(month), int(day), tzinfo=timezone.get_current_timezone()
-                )
-            except Exception:
-                # fall through to now()
-                break
-    return timezone.now()
-
-
-# ------------------------------------------------------------------------------
-# Negative keyword caching
-# ------------------------------------------------------------------------------
-
-from functools import lru_cache
-
-
-@lru_cache(maxsize=1)
-def _negative_keywords_lower() -> List[str]:
-    """
-    Load negative keywords using values_list for memory efficiency.
-    Only loads keyword strings, not full ORM objects.
-    """
-    try:
-        # Use values_list(flat=True) to get only keyword strings
-        return [kw.lower() for kw in NegativeKeyword.objects.values_list('keyword', flat=True) if kw]
-    except Exception as e:
-        logger.error(f"Error loading negative keywords: {e}")
-        return []
-
-
-def refresh_negative_keywords_cache() -> None:
-    _negative_keywords_lower.cache_clear()
-
-
-def contains_negative_keywords(title: str, description: str) -> bool:
-    text = f"{title} {description}".lower()
-    for kw in _negative_keywords_lower():
-        if kw and kw in text:
-            return True
-    return False
 
 
 # ------------------------------------------------------------------------------
@@ -530,56 +418,6 @@ def extract_text_from_pdf(pdf_url: str) -> str:
         return ""
 
 
-def check_page_for_icpe(url: str) -> bool:
-    try:
-        text = fetch_page_text(url)
-        return contains_icpe_keywords(text)
-    except Exception as e:
-        logger.error(f"Error checking page for ICPE at {url}: {e}")
-        return False
-
-
-def check_pdfs_for_icpe(pdf_urls: List[str]) -> bool:
-    for u in pdf_urls:
-        try:
-            text = extract_text_from_pdf(u)
-            if text and contains_icpe_keywords(text):
-                return True
-        except Exception as e:
-            logger.error(f"Error checking PDF {u} for ICPE: {e}")
-    return False
-
-
-# ------------------------------------------------------------------------------
-# ICPE pipeline (declarative)
-# ------------------------------------------------------------------------------
-
-def icpe_flag_for_item(title: str, description: str, link: Optional[str], domain: Optional[str]) -> bool:
-    """Cheap -> deeper ICPE detection with short-circuits and capped PDF checks."""
-    if contains_icpe_keywords(f"{title} {description}"):
-        return True
-    if not link:
-        return False
-
-    # Check if the link is directly to a PDF
-    if link.lower().endswith('.pdf'):
-        logger.debug(f"Direct PDF URL detected: {link}")
-        return check_pdfs_for_icpe([link])
-
-    parsed = urlparse(link)
-    same_domain = bool(parsed.netloc and domain and parsed.netloc.endswith(domain))
-
-    if same_domain and check_page_for_icpe(link):
-        return True
-
-    pdf_links = extract_pdf_links_from_page(link)
-    if not pdf_links:
-        return False
-
-    # Cap to first N PDFs to avoid heavy scans
-    return check_pdfs_for_icpe(pdf_links[: CONFIG.icpe_pdf_cap])
-
-
 # ------------------------------------------------------------------------------
 # Card extraction
 # ------------------------------------------------------------------------------
@@ -617,333 +455,6 @@ def extract_card_data(card_element, domain: Optional[str] = None) -> Optional[Sc
     except Exception as e:
         logger.error(f"Error extracting card data: {e}")
         return None
-
-# Summary generation using A.I.
-
-def trim_text(full_page_text: str, max_tokens: int = 200_000, model: str = "gpt-5-nano") -> str:
-    """Trim text to fit within a max token limit."""
-    # Load the tokenizer for the model you are using
-    encoding = tiktoken.encoding_for_model(model)
-
-    # Encode the text into tokens
-    tokens = encoding.encode(full_page_text)
-
-    # Truncate if needed
-    if len(tokens) > max_tokens:
-        tokens = tokens[:max_tokens]
-
-    # Decode back into a string
-    trimmed_text = encoding.decode(tokens)
-    return trimmed_text
-
-def get_document_info(full_page_text: str) -> str:
-    """Get document info using A.I."""
-    trimmed_text = trim_text(full_page_text)
-    prompt = f"""
-    Analyse le texte ci-dessous et renvoie un JSON avec les champs suivants :
-    - summary: Un résumé du texte en français (uniquement en français) et en 100 mots maximum.
-    - is_animal_project: le booléen indiquant si le texte est lié à un projet d'élevage animal
-    - animal_type: le type d'animal (ovin, caprin, bovin, porcin, volaille) si le projet est un projet d'élevage animal, sinon renvoie None
-    - animal_number: le nombre d'animaux (nombre) si le projet est un projet d'élevage animal si il est précisé, sinon renvoie None
-    Voici le texte à analyser :
-    {trimmed_text}"""
-
-    class PrefectureDocumentSummary(BaseModel):
-        summary: str
-        is_animal_project: bool
-        animal_type: Optional[str] = None
-        animal_number: Optional[int] = None
-
-    # summary = call_mistral_api(prompt)
-    document_info = call_openai_api(prompt, response_format=PrefectureDocumentSummary)
-    return document_info
-
-
-# Check if the project is related to intensive farming based on summary
-
-def check_if_intensive_farming(summary: str) -> bool:
-
-    class IntensiveFarmingCheck(BaseModel):
-        is_intensive_farming: bool
-
-    """Check if the project is related to intensive farming based on summary"""
-    prompt = f"""
-    Analyse le texte ci-dessous et renvoie un booléen indiquant si le projet est lié à l'agriculture intensive.
-    Voici le texte à analyser :
-    {summary}"""
-    return call_openai_api(prompt, response_format=IntensiveFarmingCheck)
-# ------------------------------------------------------------------------------
-# Persistence
-# ------------------------------------------------------------------------------
-
-def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timezone.now, batch_size: int = CONFIG.db_batch_size) -> int:
-    """
-    Persist scraped items with minimal memory usage:
-    - Process items one-by-one with immediate DB operations
-    - Skip no-op updates
-    - Negative keyword filtering
-    - No batching - immediate saves for lowest memory footprint
-    """
-    if not scraped_cards:
-        return 0
-
-    logger.info(f"Processing {len(scraped_cards)} scraped cards for domain: {domain}")
-
-    prefecture_info = get_prefecture_by_domain(domain)
-    pref_name = prefecture_info["name"] if prefecture_info else None
-    pref_code = prefecture_info["code"] if prefecture_info else None
-    region_name = prefecture_info["region"] if prefecture_info else None
-
-    saved = 0
-    processed = 0
-
-    for card in scraped_cards:
-        try:
-            processed += 1
-            if processed % 100 == 0:
-                logger.info(f"Progress: {processed}/{len(scraped_cards)} items processed, {saved} saved/updated")
-
-            # Date from metadata if present
-            date_updated = now()
-            if card.metadata and "fr-card__detail" in card.metadata:
-                detail_text = " ".join(card.metadata["fr-card__detail"])
-                date_updated = parse_date_from_detail(detail_text)
-
-            # Check negative keywords first (we want to delete records with negative keywords)
-            # Query DB for this specific link only
-            try:
-                existing = GovernmentDocument.objects.filter(link=card.link).only(
-                    'id', 'title', 'description', 'date_updated', 'is_icpe',
-                    'prefecture_name', 'prefecture_code', 'region_name'
-                ).first()
-            except Exception as db_error:
-                logger.error(f"Database error while looking up '{card.link}': {db_error}")
-                continue
-
-            if contains_negative_keywords(card.title, card.description):
-                if existing:
-                    logger.info(f"Negative keyword found in existing record, deleting immediately: '{card.title}' - {card.link}")
-                    existing.delete()
-                else:
-                    logger.info(f"Negative keyword found in new record, skipping: '{card.title}'")
-                continue
-
-            #skip the record if it more than 30 days
-            if date_updated < timezone.now() - timedelta(days=30):
-                logger.info(f"Skipping record more than 30 days old: '{card.title}' - {card.link}")
-                continue
-
-            # Check if record already exists with same link AND date_updated
-            if existing and existing.date_updated == date_updated:
-                # Record is identical (same link + date_updated), skip it entirely
-                logger.info(f"Skipping unchanged record (same link + date): '{card.title}' - {card.link}")
-                continue
-
-            # Check if the link is a pdf - if not, fetch the full page text, otherwise extract the text from the pdf
-            if not card.link.lower().endswith('.pdf'):
-                full_page_text = fetch_page_text(card.link)
-            else:
-                full_page_text = extract_text_from_pdf(card.link)
-
-            # We no longer check for ICPE status for now
-            is_icpe = False
-
-            # Generate a summary of the full page text
-            document_info = get_document_info(full_page_text)
-            summary = document_info.summary
-            is_animal_project = document_info.is_animal_project
-            animal_type = document_info.animal_type
-            animal_number = document_info.animal_number
-            logger.info(f"Summary generated for '{card.title}': {summary}")
-
-            if is_animal_project:
-                is_intensive_farming = check_if_intensive_farming(summary).is_intensive_farming
-                logger.info(f"Intensive farming check result for '{card.title}': {is_intensive_farming}")
-            else:
-                is_intensive_farming = False
-
-            # If the project is intensive farming, do a more detailed search of document_info by including the pdf links in the full page text
-
-            # If the project is intensive farming, do a more detailed search of document_info
-            # by including the PDF contents linked from the detail page and re-run the analysis.
-            if is_intensive_farming:
-                try:
-                    # --- Hard limits for appended PDF text ---
-                    PER_PDF_CHAR_LIMIT = 200_000          # cap per PDF text chunk (reasonable upper bound)
-                    TOTAL_PDF_CHAR_BUDGET = 400_000       # total budget across all appended PDFs
-
-                    # Collect a few PDF links from the page (dedup + cap)
-                    linked_pdfs = extract_pdf_links_from_page(card.link)
-                    if linked_pdfs:
-                        pdf_sample = []
-                        seen = set()
-                        for u in linked_pdfs:
-                            u_norm = u.strip()
-                            if not u_norm or u_norm in seen:
-                                continue
-                            seen.add(u_norm)
-                            pdf_sample.append(u_norm)
-                            if len(pdf_sample) >= CONFIG.icpe_pdf_cap:
-                                break
-
-                        # Pull text from those PDFs (skip empties) under strict caps
-                        appended_texts: List[str] = []
-                        total_appended = 0
-                        for pdf_url in pdf_sample:
-                            if total_appended >= TOTAL_PDF_CHAR_BUDGET:
-                                break
-                            try:
-                                pdf_text = extract_text_from_pdf(pdf_url)
-                                if not pdf_text:
-                                    continue
-                                # Enforce per-PDF cap
-                                if len(pdf_text) > PER_PDF_CHAR_LIMIT:
-                                    pdf_text = pdf_text[:PER_PDF_CHAR_LIMIT]
-                                # Enforce overall budget
-                                remaining = TOTAL_PDF_CHAR_BUDGET - total_appended
-                                if remaining <= 0:
-                                    break
-                                if len(pdf_text) > remaining:
-                                    pdf_text = pdf_text[:remaining]
-
-                                appended_texts.append(pdf_text)
-                                total_appended += len(pdf_text)
-                            except Exception as pdf_err:
-                                logger.debug(f"Error extracting appended PDF text from {pdf_url}: {pdf_err}")
-                                continue
-
-                        if appended_texts:
-                            # Build enriched corpus
-                            enriched_text_parts = [
-                                "==== PAGE TEXT START ====",
-                                full_page_text or "",
-                                "==== PAGE TEXT END ====",
-                                "==== LINKED PDF TEXT START ====",
-                                "\n\n==== NEXT PDF ====\n\n".join(appended_texts),
-                                "==== LINKED PDF TEXT END ====",
-                            ]
-                            enriched_text = "\n\n".join(enriched_text_parts)
-
-                            # Explicitly trim to 200k tokens before analysis
-                            enriched_text = trim_text(enriched_text, max_tokens=200_000)
-
-                            # Re-run the same info extraction on the enriched text
-                            refined_info = get_document_info(enriched_text)
-
-                            summary = refined_info.summary
-                            is_animal_project = bool(refined_info.is_animal_project)
-                            animal_type = refined_info.animal_type
-                            animal_number = refined_info.animal_number
-                            logger.info(
-                                f"Refined document info applied for '{card.title}' "
-                                f"(animal_project={is_animal_project}, type={animal_type}, n={animal_number})"
-                            )
-                        else:
-                            logger.debug(f"No usable PDF text found to enrich '{card.title}'")
-                    else:
-                        logger.debug(f"No linked PDFs found on page to enrich '{card.title}'")
-
-                except Exception as refine_err:
-                    logger.warning(f"Refinement step failed for '{card.title}': {refine_err}")
-
-            if existing:
-                # Record exists but has different date_updated or other fields changed
-                changed = (
-                    existing.title != card.title
-                    or (existing.description or "") != (card.description or "")
-                    or existing.date_updated != date_updated
-                    or existing.is_icpe != is_icpe
-                    or (pref_name and existing.prefecture_name != pref_name)
-                    or (pref_code and existing.prefecture_code != pref_code)
-                    or (region_name and existing.region_name != region_name)
-                )
-                if changed:
-                    logger.info(f"Updating existing record: '{card.title}' - {card.link} (ICPE: {is_icpe})")
-                    existing.title = card.title
-                    existing.description = card.description
-                    existing.date_updated = date_updated
-                    existing.full_page_text = full_page_text
-                    existing.summary = summary
-                    existing.is_animal_project = is_animal_project
-                    existing.is_intensive_farming = is_intensive_farming
-                    existing.is_icpe = is_icpe
-                    if pref_name:
-                        existing.prefecture_name = pref_name
-                    if pref_code:
-                        existing.prefecture_code = pref_code
-                    if region_name:
-                        existing.region_name = region_name
-                    existing.save()
-                    saved += 1
-                else:
-                    logger.debug(f"No changes detected for existing record: '{card.title}'")
-            else:
-                # Create new record immediately
-                logger.info(f"Creating new record: '{card.title}' - {card.link} (ICPE: {is_icpe})")
-                doc = GovernmentDocument(
-                    title=card.title,
-                    description=card.description,
-                    link=card.link,
-                    date_updated=date_updated,
-                    full_page_text=full_page_text,
-                    summary=summary,
-                    is_animal_project=is_animal_project,
-                    is_intensive_farming=is_intensive_farming,
-                    animal_type=animal_type,
-                    animal_number=animal_number,
-                    prefecture_name=pref_name,
-                    prefecture_code=pref_code,
-                    region_name=region_name,
-                    is_icpe=is_icpe,
-                )
-                doc.save()
-                saved += 1
-
-        except Exception as e:
-            logger.error(f"Error processing item '{card.title}': {e}")
-            continue
-
-    logger.info(f"Processing complete: {saved} total records saved/updated for {domain}")
-    return saved
-
-
-def remove_documents_with_negative_keywords() -> int:
-    """
-    Remove ALL documents containing negative keywords.
-    Uses iterator() for streaming and bulk delete for efficiency.
-    """
-    try:
-        # Collect IDs to delete in batches
-        to_delete_ids = []
-        total_removed = 0
-        batch_size = CONFIG.db_batch_size
-
-        # Remove ALL documents regardless of age
-        queryset = GovernmentDocument.objects.all()
-        logger.info("Removing ALL documents containing negative keywords")
-
-        # Use iterator() to stream results without loading all into memory
-        for d in queryset.iterator(chunk_size=batch_size):
-            if contains_negative_keywords(d.title, d.description or ""):
-                to_delete_ids.append(d.id)
-
-                # Perform bulk delete when batch is full
-                if len(to_delete_ids) >= batch_size:
-                    GovernmentDocument.objects.filter(id__in=to_delete_ids).delete()
-                    total_removed += len(to_delete_ids)
-                    logger.debug(f"Bulk deleted batch of {len(to_delete_ids)} items with negative keywords")
-                    to_delete_ids.clear()
-
-        # Delete remaining items
-        if to_delete_ids:
-            GovernmentDocument.objects.filter(id__in=to_delete_ids).delete()
-            total_removed += len(to_delete_ids)
-            logger.debug(f"Bulk deleted final batch of {len(to_delete_ids)} items with negative keywords")
-
-        return total_removed
-    except Exception as e:
-        logger.error(f"Error during negative keyword cleanup: {e}")
-        return 0
 
 
 # ------------------------------------------------------------------------------
@@ -1012,56 +523,3 @@ def scrape_url(domain: str, keyword: str, offset: int = 0) -> List[Dict[str, Any
     """
     cards = scrape_government_site(domain, keyword, offset)
     return [card.__dict__ for card in cards]
-
-
-def scrape_all_results(domain: str, keyword: str, batch_size: int = CONFIG.db_batch_size) -> List[Dict[str, Any]]:
-    """
-    Scrape all pages, persist results in batches, run lightweight cleanup.
-    Returns metadata about items (count, sample) instead of all items to reduce memory.
-
-    For backward compatibility, still returns list of dicts but processes in batches.
-    """
-    logger.info(f"=" * 80)
-    logger.info(f"Starting full scrape for domain: {domain}, keyword: '{keyword}'")
-    logger.info(f"=" * 80)
-
-    batch: List[ScrapedCard] = []
-    total_saved = 0
-    total_count = 0
-
-    for page in iterate_search_pages(domain, keyword):
-        batch.extend(page)
-        total_count += len(page)
-        logger.debug(f"Current batch size: {len(batch)}, total scraped so far: {total_count}")
-
-        # Process batch when it reaches batch_size
-        if len(batch) >= batch_size:
-            logger.info(f"Batch threshold reached ({len(batch)} items), saving to database...")
-            saved_count = save_to_database(batch, domain)
-            total_saved += saved_count
-            logger.info(f"Progress: {total_saved} total items saved/updated so far")
-            batch.clear()  # Clear batch to free memory
-
-    # Process remaining items in final batch
-    if batch:
-        logger.info(f"Processing final batch of {len(batch)} items...")
-        saved_count = save_to_database(batch, domain)
-        total_saved += saved_count
-        logger.info(f"Final batch saved: {saved_count} items")
-        batch.clear()
-
-    logger.info(f"Running cleanup of negative keywords...")
-    removed_count = remove_documents_with_negative_keywords()
-    if removed_count:
-        logger.info(f"Cleanup complete: removed {removed_count} documents with negative keywords")
-    else:
-        logger.info(f"Cleanup complete: no documents with negative keywords found")
-
-    logger.info(f"=" * 80)
-    logger.info(f"SCRAPING COMPLETE for {domain}/{keyword}")
-    logger.info(f"Total scraped: {total_count} items | Total saved/updated: {total_saved} items")
-    logger.info(f"=" * 80)
-
-    # Return summary instead of full data to save memory
-    # For backward compatibility, return empty list (data is already in DB)
-    return []

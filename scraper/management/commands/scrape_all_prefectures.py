@@ -3,7 +3,7 @@ Django management command to scrape all prefecture government websites.
 """
 import json
 from django.core.management.base import BaseCommand, CommandError
-from scraper.scraper import scrape_all_results
+from scraper.analysis import scrape_all_results
 from scraper.constants import PREFECTURES, get_prefectures_by_region, get_all_regions
 
 

@@ -5,7 +5,7 @@ import json
 import logging
 from celery import shared_task
 from django.utils import timezone
-from scraper.scraper import scrape_all_results
+from scraper.analysis import scrape_all_results
 from scraper.constants import PREFECTURES, get_prefectures_by_region
 from scraper.models import ScrapingTask, ScrapingTaskResult
 from scraper.utils import format_results_pretty

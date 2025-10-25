@@ -4,7 +4,7 @@ Django management command to scrape the Morbihan government website.
 import json
 from django.core.management.base import BaseCommand, CommandError
 from scraper.scraper import scrape_url
-from scraper.constants import PREFECTURES, get_all_domains
+from scraper.constants import PREFECTURES
 
 
 class Command(BaseCommand):

@@ -166,11 +166,3 @@ def get_all_regions():
     """
     return list(set(p['region'] for p in PREFECTURES))
 
-def get_all_domains():
-    """
-    Get list of all prefecture domains.
-    
-    Returns:
-        list: List of all domain names
-    """
-    return [p['domain'] for p in PREFECTURES]

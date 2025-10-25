@@ -3,7 +3,8 @@
 Example usage of the updated scraper with automatic prefecture detection and negative keyword filtering.
 """
 
-from scraper.scraper import scrape_url, scrape_all_results, remove_documents_with_negative_keywords
+from scraper.scraper import scrape_url
+from scraper.analysis import scrape_all_results, remove_documents_with_negative_keywords
 from scraper.constants import PREFECTURES, get_prefectures_by_region
 from scraper.models import NegativeKeyword
 
