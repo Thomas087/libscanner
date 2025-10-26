@@ -44,7 +44,7 @@ class ScraperConfig:
     max_offset: int = 1000
     cache_ttl_seconds: int = 600  # 10 minutes
     cache_max_memory_mb: int = 50  # Reduced cache memory for single-item processing
-    cache_max_items: int = 256  # Reduced cache items for single-item processing
+    cache_max_items: int = 10  # Reduced cache items for single-item processing
 
 
 CONFIG = ScraperConfig()

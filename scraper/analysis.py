@@ -254,7 +254,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                                 continue
                             seen.add(u_norm)
                             pdf_sample.append(u_norm)
-                            if len(pdf_sample) >= 5:  # PDF cap limit
+                            if len(pdf_sample) >= 3:  # PDF cap limit
                                 break
 
                         # Pull text from those PDFs (skip empties) under strict caps
