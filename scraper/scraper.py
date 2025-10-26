@@ -43,9 +43,8 @@ class ScraperConfig:
     page_step: int = 10
     max_offset: int = 1000
     cache_ttl_seconds: int = 600  # 10 minutes
-    db_batch_size: int = 30  # Batch size for database operations
-    cache_max_memory_mb: int = 100  # Maximum cache memory in MB
-    cache_max_items: int = 512  # Maximum number of cached items
+    cache_max_memory_mb: int = 50  # Reduced cache memory for single-item processing
+    cache_max_items: int = 256  # Reduced cache items for single-item processing
 
 
 CONFIG = ScraperConfig()

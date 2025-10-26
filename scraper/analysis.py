@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from .constants import get_prefecture_by_domain
 from .models import GovernmentDocument, NegativeKeyword
-from .scraper import CONFIG, ScrapedCard, extract_pdf_links_from_page, extract_text_from_pdf, fetch_page_text
+from .scraper import ScrapedCard, extract_pdf_links_from_page
 
 from llm_api.views import call_openai_api
 
@@ -148,14 +148,17 @@ def check_if_intensive_farming(summary: str) -> bool:
 # Database Operations
 # ------------------------------------------------------------------------------
 
-def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timezone.now, batch_size: int = CONFIG.db_batch_size) -> int:
+def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timezone.now) -> int:
     """
     Persist scraped items with minimal memory usage:
     - Process items one-by-one with immediate DB operations
     - Skip no-op updates
     - Negative keyword filtering
-    - No batching - immediate saves for lowest memory footprint
+    - Immediate memory cleanup after each item
     """
+    import gc
+    from .scraper import fetch_page_soup, fetch_page_text, extract_text_from_pdf
+    
     if not scraped_cards:
         return 0
 
@@ -172,8 +175,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
     for card in scraped_cards:
         try:
             processed += 1
-            if processed % 100 == 0:
-                logger.info(f"Progress: {processed}/{len(scraped_cards)} items processed, {saved} saved/updated")
+            logger.debug(f"Processing item {processed}/{len(scraped_cards)}: '{card.title}'")
 
             # Date from metadata if present
             date_updated = now()
@@ -213,10 +215,11 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
 
             # Check if the link is a pdf - if not, fetch the full page text, otherwise extract the text from the pdf
             if not card.link.lower().endswith('.pdf'):
+                from .scraper import fetch_page_text
                 full_page_text = fetch_page_text(card.link)
             else:
+                from .scraper import extract_text_from_pdf
                 full_page_text = extract_text_from_pdf(card.link)
-
 
             # Generate a summary of the full page text
             document_info = get_document_info(full_page_text)
@@ -231,8 +234,6 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                 logger.info(f"Intensive farming check result for '{card.title}': {is_intensive_farming}")
             else:
                 is_intensive_farming = False
-
-            # If the project is intensive farming, do a more detailed search of document_info by including the pdf links in the full page text
 
             # If the project is intensive farming, do a more detailed search of document_info
             # by including the PDF contents linked from the detail page and re-run the analysis.
@@ -308,6 +309,10 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                                 f"Refined document info applied for '{card.title}' "
                                 f"(animal_project={is_animal_project}, type={animal_type}, n={animal_number})"
                             )
+                            
+                            # Clear enriched text from memory
+                            del enriched_text, enriched_text_parts, appended_texts
+                            gc.collect()
                         else:
                             logger.debug(f"No usable PDF text found to enrich '{card.title}'")
                     else:
@@ -366,6 +371,23 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                 doc.save()
                 saved += 1
 
+            # Clear memory after processing each item
+            del full_page_text, summary, document_info
+            if 'is_intensive_farming' in locals():
+                del is_intensive_farming
+            if 'animal_type' in locals():
+                del animal_type
+            if 'animal_number' in locals():
+                del animal_number
+            
+            # Clear caches periodically to free memory
+            if processed % 10 == 0:
+                fetch_page_soup.cache_clear()
+                fetch_page_text.cache_clear()
+                extract_text_from_pdf.cache_clear()
+            
+            gc.collect()
+
         except Exception as e:
             logger.error(f"Error processing item '{card.title}': {e}")
             continue
@@ -383,7 +405,7 @@ def remove_documents_with_negative_keywords() -> int:
         # Collect IDs to delete in batches
         to_delete_ids = []
         total_removed = 0
-        batch_size = CONFIG.db_batch_size
+        batch_size = 100  # Fixed batch size for bulk operations
 
         # Remove ALL documents regardless of age
         queryset = GovernmentDocument.objects.all()
@@ -417,43 +439,45 @@ def remove_documents_with_negative_keywords() -> int:
 # High-level scraping orchestration
 # ------------------------------------------------------------------------------
 
-def scrape_all_results(domain: str, keyword: str, batch_size: int = CONFIG.db_batch_size) -> List[Dict[str, Any]]:
+def scrape_all_results(domain: str, keyword: str) -> List[Dict[str, Any]]:
     """
-    Scrape all pages, persist results in batches, run lightweight cleanup.
+    Scrape all pages, persist results one item at a time with memory cleanup.
     Returns metadata about items (count, sample) instead of all items to reduce memory.
 
-    For backward compatibility, still returns list of dicts but processes in batches.
+    For backward compatibility, still returns list of dicts but processes items individually.
     """
-    from .scraper import iterate_search_pages
+    from .scraper import iterate_search_pages, fetch_page_soup, fetch_page_text, extract_text_from_pdf
+    import gc
     
     logger.info("=" * 80)
     logger.info(f"Starting full scrape for domain: {domain}, keyword: '{keyword}'")
     logger.info("=" * 80)
 
-    batch: List[ScrapedCard] = []
     total_saved = 0
     total_count = 0
 
     for page in iterate_search_pages(domain, keyword):
-        batch.extend(page)
         total_count += len(page)
-        logger.debug(f"Current batch size: {len(batch)}, total scraped so far: {total_count}")
+        logger.debug(f"Processing page with {len(page)} items, total scraped so far: {total_count}")
 
-        # Process batch when it reaches batch_size
-        if len(batch) >= batch_size:
-            logger.info(f"Batch threshold reached ({len(batch)} items), saving to database...")
-            saved_count = save_to_database(batch, domain)
+        # Process each item individually
+        for item in page:
+            logger.debug(f"Processing individual item: '{item.title}'")
+            saved_count = save_to_database([item], domain)
             total_saved += saved_count
-            logger.info(f"Progress: {total_saved} total items saved/updated so far")
-            batch.clear()  # Clear batch to free memory
-
-    # Process remaining items in final batch
-    if batch:
-        logger.info(f"Processing final batch of {len(batch)} items...")
-        saved_count = save_to_database(batch, domain)
-        total_saved += saved_count
-        logger.info(f"Final batch saved: {saved_count} items")
-        batch.clear()
+            
+            # Clear memory after each item
+            del item
+            
+            # Clear caches periodically to free memory
+            if total_count % 20 == 0:
+                fetch_page_soup.cache_clear()
+                fetch_page_text.cache_clear()
+                extract_text_from_pdf.cache_clear()
+            
+            gc.collect()
+            
+            logger.debug(f"Progress: {total_saved} total items saved/updated so far")
 
     logger.info("Running cleanup of negative keywords...")
     removed_count = remove_documents_with_negative_keywords()
