@@ -269,7 +269,7 @@ class NegativeKeywordAdmin(admin.ModelAdmin):
     def cleanup_documents_view(self, request):
         """View to clean up documents containing negative keywords."""
         try:
-            from .scraper import remove_documents_with_negative_keywords
+            from .analysis import remove_documents_with_negative_keywords
             
             # Get the number of documents before cleanup
             from .models import GovernmentDocument
