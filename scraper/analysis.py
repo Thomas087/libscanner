@@ -41,6 +41,54 @@ DATE_PATTERNS: Tuple[re.Pattern, ...] = tuple(
 )
 
 # ------------------------------------------------------------------------------
+# Multi-document page detection
+# ------------------------------------------------------------------------------
+
+def detect_multi_document_page(title: str) -> Optional[str]:
+    """
+    Detect if a page title indicates it contains multiple documents that need to be scraped separately.
+    
+    Returns:
+        str: The type of multi-document page detected, or None if not a multi-document page.
+    """
+    if not title:
+        return None
+    
+    title_stripped = title.strip()
+    
+    # Exact string matches
+    exact_matches = {
+        "Décisions": "Décisions",
+        "Divers": "Divers",
+        "Autorisations administratives": "Autorisations administratives",
+        "Arrêtés d'autorisation": "Arrêtés d'autorisation",
+        "Enregistrement": "Enregistrement",
+        "Consultations": "Consultations",
+        "Les ICPE soumises à enregistrement": "Les ICPE soumises à enregistrement",
+    }
+    
+    if title_stripped in exact_matches:
+        return exact_matches[title_stripped]
+    
+    # Contains matches
+    if "Preuves de dépôt" in title_stripped:
+        return "Preuves de dépôt"
+    
+    if "Preuves de dépôts" in title_stripped:
+        return "Preuves de dépôts"
+    
+    # Year detection (4-digit year, typically 1900-2100)
+    year_pattern = re.compile(r'\b(19|20)\d{2}\b')
+    if year_pattern.search(title_stripped):
+        # Extract the year for more specific identification
+        year_match = year_pattern.search(title_stripped)
+        if year_match:
+            return f"Year_{year_match.group()}"
+    
+    return None
+
+
+# ------------------------------------------------------------------------------
 # Keyword checks & date parse
 # ------------------------------------------------------------------------------
 
@@ -138,7 +186,8 @@ def check_if_intensive_farming(summary: str) -> bool:
         is_intensive_farming: bool
 
     prompt = f"""
-    Analyse le texte ci-dessous et renvoie un booléen indiquant si le projet est lié à l'agriculture intensive.
+    Analyse le texte ci-dessous et renvoie un booléen indiquant si le projet est lié l'élevage intensif d'animaux.
+    Le texte est plus suceptible d'être un projet d'élevage intensif d'animaux si il contient des mentions d'élevage animal et certains des mots suivants : Enquête publique , Consultation du public, 3660, Déclaration, Déclaration initiale, Poulets, Cochons, DUC, Poules
     Voici le texte à analyser :
     {summary}"""
     return call_openai_api(prompt, response_format=IntensiveFarmingCheck)
@@ -202,6 +251,13 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     logger.info(f"Negative keyword found in new record, skipping: '{card.title}'")
                 continue
 
+            # Detect multi-document pages
+            multi_document_page_type = detect_multi_document_page(card.title)
+            contains_multiple_documents = multi_document_page_type is not None
+            
+            if contains_multiple_documents:
+                logger.info(f"Multi-document page detected for '{card.title}': {multi_document_page_type}")
+
             #skip the record if it more than 30 days
             if date_updated < timezone.now() - timedelta(days=30):
                 logger.info(f"Skipping record more than 30 days old: '{card.title}' - {card.link}")
@@ -212,6 +268,13 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                 # Record is identical (same link + date_updated), skip it entirely
                 logger.info(f"Skipping unchanged record (same link + date): '{card.title}' - {card.link}")
                 continue
+            
+            # Special handling for pages containing multiple documents
+            # TODO: Implement scraping and AI analysis to extract sub-pages
+            if contains_multiple_documents:
+                # Placeholder for multi-document page handling logic
+                # This will scrape the page, analyze with AI, and extract sub-pages to be processed
+                pass
 
             # Check if the link is a pdf - if not, fetch the full page text, otherwise extract the text from the pdf
             if not card.link.lower().endswith('.pdf'):
