@@ -193,6 +193,114 @@ def check_if_intensive_farming(summary: str) -> bool:
     return call_openai_api(prompt, response_format=IntensiveFarmingCheck)
 
 
+def extract_arretes_prefectoraux_from_page(page_text: str, page_url: str) -> List[ScrapedCard]:
+    """
+    Extract arrêtés préfectoraux from a multi-document page using AI analysis.
+    
+    Args:
+        page_text: The full text content of the page
+        page_url: The URL of the page (used to construct absolute links)
+    
+    Returns:
+        List of ScrapedCard objects representing the extracted arrêtés préfectoraux
+    """
+    from urllib.parse import urljoin
+    
+    logger.info(f"[MULTI-DOC] Starting AI extraction of arrêtés préfectoraux from page: {page_url}")
+    logger.info(f"[MULTI-DOC] Page text length: {len(page_text)} characters")
+    
+    trimmed_text = trim_text(page_text, max_tokens=200_000)
+    logger.info(f"[MULTI-DOC] Trimmed text length: {len(trimmed_text)} characters (max 200k tokens)")
+    
+    prompt = f"""
+    Analyse le contenu de cette page web qui contient plusieurs arrêtés préfectoraux.
+    
+    Extrais tous les arrêtés préfectoraux présents sur cette page et renvoie une liste JSON avec pour chaque arrêté :
+    - title: Le titre complet de l'arrêté préfectoral (obligatoire, chaîne de caractères)
+    - link: L'URL complète (absolue) du lien vers l'arrêté préfectoral. Si le lien est relatif, construis-le à partir de l'URL de base : {page_url} (obligatoire, chaîne de caractères)
+    - date_updated: La date de mise à jour ou de publication de l'arrêté au format DD/MM/YYYY. Si la date n'est pas trouvée, utilise la date du jour (obligatoire, chaîne de caractères au format DD/MM/YYYY)
+    
+    Format JSON attendu :
+    {{
+        "arretes": [
+            {{
+                "title": "",
+                "link": "",
+                "date_updated": ""
+            }}
+        ]
+    }}
+    
+    Important :
+    - Ne renvoie que les arrêtés préfectoraux, pas les autres types de documents
+    - Assure-toi que tous les liens sont des URLs absolues complètes (commençant par http:// ou https://)
+    - Si un arrêté n'a pas de lien direct, essaie de le construire à partir de l'URL de base : {page_url}
+    - Extrais uniquement les informations présentes sur la page, ne crée pas de données fictives
+    - Si aucun arrêté préfectoral n'est trouvé, renvoie un tableau vide : {{"arretes": []}}
+    
+    Voici le contenu de la page à analyser :
+    {trimmed_text}
+    """
+    
+    class ArretePrefectoral(BaseModel):
+        title: str
+        link: str
+        date_updated: str
+    
+    class ArretesList(BaseModel):
+        arretes: List[ArretePrefectoral]
+    
+    try:
+        logger.info("[MULTI-DOC] Calling OpenAI API to extract arrêtés préfectoraux...")
+        result = call_openai_api(prompt, response_format=ArretesList)
+        logger.info(f"[MULTI-DOC] OpenAI API returned {len(result.arretes)} arrêtés préfectoraux")
+        
+        extracted_arretes = []
+        skipped_count = 0
+        
+        for idx, arrete in enumerate(result.arretes, 1):
+            # Validate extracted data
+            if not arrete.title or not arrete.title.strip():
+                logger.warning(f"[MULTI-DOC] Skipping arrêté #{idx}: empty title")
+                skipped_count += 1
+                continue
+            
+            if not arrete.link or not arrete.link.strip():
+                logger.warning(f"[MULTI-DOC] Skipping arrêté #{idx} '{arrete.title}': empty link")
+                skipped_count += 1
+                continue
+            
+            # Ensure link is absolute
+            original_link = arrete.link
+            if not arrete.link.startswith('http'):
+                arrete.link = urljoin(page_url, arrete.link)
+                logger.debug(f"[MULTI-DOC] Converted relative link to absolute: {original_link} -> {arrete.link}")
+            
+            # Create metadata with date for proper parsing in save_to_database
+            metadata = {
+                "fr-card__detail": [arrete.date_updated]
+            }
+            
+            # Create a ScrapedCard from the extracted arrêté
+            card = ScrapedCard(
+                title=arrete.title,
+                link=arrete.link,
+                description="",
+                date_label=arrete.date_updated,
+                metadata=metadata,
+                html_content=None,
+            )
+            extracted_arretes.append(card)
+            logger.info(f"[MULTI-DOC] Extracted arrêté #{idx}: '{arrete.title}' | Link: {arrete.link} | Date: {arrete.date_updated}")
+        
+        logger.info(f"[MULTI-DOC] Extraction complete: {len(extracted_arretes)} valid arrêtés extracted, {skipped_count} skipped")
+        return extracted_arretes
+        
+    except Exception as e:
+        logger.error(f"[MULTI-DOC] Error extracting arrêtés préfectoraux from page {page_url}: {e}", exc_info=True)
+        return []
+
+
 # ------------------------------------------------------------------------------
 # Database Operations
 # ------------------------------------------------------------------------------
@@ -256,7 +364,66 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
             contains_multiple_documents = multi_document_page_type is not None
             
             if contains_multiple_documents:
-                logger.info(f"Multi-document page detected for '{card.title}': {multi_document_page_type}")
+                logger.info(f"[MULTI-DOC] ⚠️  MULTI-DOCUMENT PAGE DETECTED: '{card.title}' (type: {multi_document_page_type}) | URL: {card.link}")
+
+            # Special handling for pages containing multiple documents
+            if contains_multiple_documents:
+                # Fetch the page content
+                from .scraper import fetch_page_text, extract_text_from_pdf
+                
+                logger.info(f"[MULTI-DOC] Starting special processing for multi-document page: '{card.title}'")
+                logger.info(f"[MULTI-DOC] Page URL: {card.link}")
+                
+                # Get the page text (don't store the page itself)
+                is_pdf = card.link.lower().endswith('.pdf')
+                page_type = 'PDF' if is_pdf else 'HTML'
+                logger.info(f"[MULTI-DOC] Page type: {page_type}")
+                
+                try:
+                    if not is_pdf:
+                        logger.info("[MULTI-DOC] Fetching HTML page content...")
+                        page_text = fetch_page_text(card.link)
+                    else:
+                        logger.info("[MULTI-DOC] Extracting text from PDF...")
+                        page_text = extract_text_from_pdf(card.link)
+                    
+                    if not page_text:
+                        logger.warning(f"[MULTI-DOC] ❌ Could not extract text from multi-document page: {card.link}")
+                        continue
+                    
+                    logger.info(f"[MULTI-DOC] Successfully extracted {len(page_text)} characters from page")
+                    
+                except Exception as fetch_error:
+                    logger.error(f"[MULTI-DOC] ❌ Error fetching page content from {card.link}: {fetch_error}", exc_info=True)
+                    continue
+                
+                # Extract arrêtés préfectoraux using AI
+                logger.info("[MULTI-DOC] Calling AI extraction function...")
+                extracted_arretes = extract_arretes_prefectoraux_from_page(page_text, card.link)
+                
+                if not extracted_arretes:
+                    logger.warning(f"[MULTI-DOC] ⚠️  No arrêtés préfectoraux extracted from multi-document page: {card.link}")
+                    logger.info("[MULTI-DOC] Skipping multi-document page (no arrêtés found)")
+                    continue
+                
+                logger.info(f"[MULTI-DOC] ✅ Successfully extracted {len(extracted_arretes)} arrêtés préfectoraux")
+                logger.info("[MULTI-DOC] Now processing each extracted arrêté as a regular document...")
+                
+                # Process each extracted arrêté as a regular record
+                total_extracted_saved = 0
+                for idx, extracted_arrete in enumerate(extracted_arretes, 1):
+                    logger.info(f"[MULTI-DOC] Processing extracted arrêté {idx}/{len(extracted_arretes)}: '{extracted_arrete.title}'")
+                    # Recursively process each extracted arrêté as a regular card
+                    saved_count = save_to_database([extracted_arrete], domain)
+                    total_extracted_saved += saved_count
+                    logger.info(f"[MULTI-DOC] Extracted arrêté {idx}/{len(extracted_arretes)} processed: {saved_count} record(s) saved")
+                
+                logger.info(f"[MULTI-DOC] ✅ Multi-document page processing complete: {total_extracted_saved} total records saved from {len(extracted_arretes)} extracted arrêtés")
+                logger.info("[MULTI-DOC] Note: The multi-document page itself was NOT stored in the database")
+                saved += total_extracted_saved
+                
+                # Skip normal processing for the multi-document page itself
+                continue
 
             #skip the record if it more than 30 days
             if date_updated < timezone.now() - timedelta(days=30):
@@ -268,13 +435,6 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                 # Record is identical (same link + date_updated), skip it entirely
                 logger.info(f"Skipping unchanged record (same link + date): '{card.title}' - {card.link}")
                 continue
-            
-            # Special handling for pages containing multiple documents
-            # TODO: Implement scraping and AI analysis to extract sub-pages
-            if contains_multiple_documents:
-                # Placeholder for multi-document page handling logic
-                # This will scrape the page, analyze with AI, and extract sub-pages to be processed
-                pass
 
             # Check if the link is a pdf - if not, fetch the full page text, otherwise extract the text from the pdf
             if not card.link.lower().endswith('.pdf'):
