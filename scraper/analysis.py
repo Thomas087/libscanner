@@ -77,13 +77,17 @@ def detect_multi_document_page(title: str) -> Optional[str]:
     if "Preuves de dépôts" in title_stripped:
         return "Preuves de dépôts"
     
-    # Year detection (4-digit year, typically 1900-2100)
-    year_pattern = re.compile(r'\b(19|20)\d{2}\b')
-    if year_pattern.search(title_stripped):
-        # Extract the year for more specific identification
-        year_match = year_pattern.search(title_stripped)
-        if year_match:
-            return f"Year_{year_match.group()}"
+    # Year detection (exact match: title must be exactly a 4-digit year, typically 1900-2100)
+    year_pattern = re.compile(r'^(19|20)\d{2}$')
+    year_match = year_pattern.match(title_stripped)
+    if year_match:
+        return f"Year_{year_match.group()}"
+    
+    # "Année YYYY" detection (exact match: title must be exactly "Année" followed by a 4-digit year)
+    annee_year_pattern = re.compile(r'^Année ((19|20)\d{2})$')
+    annee_year_match = annee_year_pattern.match(title_stripped)
+    if annee_year_match:
+        return f"Année_{annee_year_match.group(1)}"
     
     return None
 
@@ -193,9 +197,133 @@ def check_if_intensive_farming(summary: str) -> bool:
     return call_openai_api(prompt, response_format=IntensiveFarmingCheck)
 
 
-def extract_arretes_prefectoraux_from_page(page_text: str, page_url: str) -> List[ScrapedCard]:
+def extract_arretes_prefectoraux_deterministic(page_url: str) -> List[ScrapedCard]:
+    """
+    Deterministic extraction of documents from multi-document pages using HTML structure.
+    Looks for links with class 'fr-link fr-link--download' which is the common structure.
+    
+    Args:
+        page_url: The URL of the page to extract from
+    
+    Returns:
+        List of ScrapedCard objects representing the extracted documents
+    """
+    from urllib.parse import urljoin
+    from .scraper import fetch_page_soup
+    import re
+    
+    logger.info(f"[MULTI-DOC] Starting deterministic extraction from page: {page_url}")
+    
+    try:
+        soup = fetch_page_soup(page_url)
+        
+        # Find all download links with the fr-link--download class
+        download_links = soup.find_all("a", class_=lambda x: x and "fr-link--download" in x)
+        logger.info(f"[MULTI-DOC] Found {len(download_links)} download links with fr-link--download class")
+        extracted_documents = []
+        
+        for idx, link in enumerate(download_links, 1):
+            try:
+                # Extract href (may be relative)
+                href = link.get("href", "")
+                if not href:
+                    logger.debug(f"[MULTI-DOC] Skipping link #{idx}: no href attribute")
+                    continue
+                
+                # Make link absolute
+                if not href.startswith('http'):
+                    absolute_link = urljoin(page_url, href)
+                else:
+                    absolute_link = href
+                
+                # Try to extract date from span.fr-link__detail first
+                date_str = None
+                detail_span = link.find("span", class_="fr-link__detail")
+                detail_text = ""
+                if detail_span:
+                    detail_text = detail_span.get_text(strip=True)
+                    # Format: "PDF - 0,07 Mb - 17/04/2024"
+                    # Extract date (DD/MM/YYYY format)
+                    date_match = re.search(r'(\d{2}/\d{2}/\d{4})', detail_text)
+                    if date_match:
+                        date_str = date_match.group(1)
+                
+                # Extract title from link text
+                # Get all text, then remove the detail span text
+                link_text = link.get_text(strip=True)
+                # Remove the detail span text if it was found
+                if detail_text:
+                    link_text = link_text.replace(detail_text, "").strip()
+                # Remove "Télécharger" prefix if present
+                title = link_text.replace("Télécharger", "").strip()
+                
+                # If no date from detail span, try to extract from filename (YYYY-MM-DD format)
+                if not date_str:
+                    date_match = re.search(r'(\d{4}-\d{2}-\d{2})', href)
+                    if date_match:
+                        # Convert YYYY-MM-DD to DD/MM/YYYY
+                        year, month, day = date_match.group(1).split('-')
+                        date_str = f"{day}/{month}/{year}"
+                
+                # If still no date, try to extract from title
+                if not date_str:
+                    date_match = re.search(r'(\d{4}-\d{2}-\d{2})', title)
+                    if date_match:
+                        # Convert YYYY-MM-DD to DD/MM/YYYY
+                        year, month, day = date_match.group(1).split('-')
+                        date_str = f"{day}/{month}/{year}"
+                
+                # If no date skip this link
+                if not date_str:
+                    logger.warning(f"[MULTI-DOC] Skipping link #{idx}: no date found")
+                    continue
+                
+                # Clean title: remove file extensions, sizes, and trailing dates
+                # Remove common patterns
+                title = re.sub(r'\s*PDF\s*$', '', title, flags=re.IGNORECASE)
+                title = re.sub(r'\s*DOCX\s*$', '', title, flags=re.IGNORECASE)
+                title = re.sub(r'\s*ODT\s*$', '', title, flags=re.IGNORECASE)
+                title = re.sub(r'\s*-\s*\d+[.,]\d+\s*[KMkm]?[Bb]\s*$', '', title)  # Remove file sizes
+                title = re.sub(r'\s*-\s*\d{2}/\d{2}/\d{4}\s*$', '', title)  # Remove trailing dates
+                title = title.strip()
+                
+                if not title:
+                    logger.warning(f"[MULTI-DOC] Skipping link #{idx}: empty title after cleaning")
+                    continue
+                
+                # Create metadata with date for proper parsing in save_to_database
+                metadata = {
+                    "fr-card__detail": [date_str]
+                }
+                
+                # Create a ScrapedCard from the extracted document
+                card = ScrapedCard(
+                    title=title,
+                    link=absolute_link,
+                    description="",
+                    date_label=date_str,
+                    metadata=metadata,
+                    html_content=None,
+                )
+                extracted_documents.append(card)
+                logger.info(f"[MULTI-DOC] Deterministic extraction #{idx}: '{title}' | Link: {absolute_link} | Date: {date_str}")
+                
+            except Exception as e:
+                logger.warning(f"[MULTI-DOC] Error processing download link #{idx}: {e}")
+                continue
+        
+        logger.info(f"[MULTI-DOC] Deterministic extraction complete: {len(extracted_documents)} documents extracted")
+        return extracted_documents
+        
+    except Exception as e:
+        logger.error(f"[MULTI-DOC] Error in deterministic extraction from page {page_url}: {e}", exc_info=True)
+        return []
+
+
+def extract_arretes_prefectoraux_from_page_ai(page_text: str, page_url: str) -> List[ScrapedCard]:
     """
     Extract arrêtés préfectoraux from a multi-document page using AI analysis.
+    This is used as a fallback when deterministic extraction doesn't work.
     
     Args:
         page_text: The full text content of the page
@@ -206,37 +334,72 @@ def extract_arretes_prefectoraux_from_page(page_text: str, page_url: str) -> Lis
     """
     from urllib.parse import urljoin
     
-    logger.info(f"[MULTI-DOC] Starting AI extraction of arrêtés préfectoraux from page: {page_url}")
+    logger.info(f"[MULTI-DOC] Starting AI extraction (fallback) of arrêtés préfectoraux from page: {page_url}")
     logger.info(f"[MULTI-DOC] Page text length: {len(page_text)} characters")
     
-    trimmed_text = trim_text(page_text, max_tokens=200_000)
+    trimmed_text = trim_text(page_text, max_tokens=200_000, model="gpt-5-mini")
     logger.info(f"[MULTI-DOC] Trimmed text length: {len(trimmed_text)} characters (max 200k tokens)")
     
     prompt = f"""
-    Analyse le contenu de cette page web qui contient plusieurs arrêtés préfectoraux.
+    Analyse le contenu de cette page web qui contient une liste de documents (arrêtés préfectoraux, communiqués de presse, dossiers de presse, etc.).
     
-    Extrais tous les arrêtés préfectoraux présents sur cette page et renvoie une liste JSON avec pour chaque arrêté :
-    - title: Le titre complet de l'arrêté préfectoral (obligatoire, chaîne de caractères)
-    - link: L'URL complète (absolue) du lien vers l'arrêté préfectoral. Si le lien est relatif, construis-le à partir de l'URL de base : {page_url} (obligatoire, chaîne de caractères)
-    - date_updated: La date de mise à jour ou de publication de l'arrêté au format DD/MM/YYYY. Si la date n'est pas trouvée, utilise la date du jour (obligatoire, chaîne de caractères au format DD/MM/YYYY)
+    Cette page peut contenir :
+    - Des listes de documents organisés par mois ou par catégorie
+    - Des liens de téléchargement vers des fichiers PDF, DOCX, ODT, etc.
+    - Des titres de documents avec leurs dates de publication
+    
+    Extrais TOUS les documents présents sur cette page (arrêtés préfectoraux, communiqués, dossiers de presse, etc.) et renvoie une liste JSON avec pour chaque document :
+    - title: Le titre complet du document tel qu'affiché sur la page (obligatoire, chaîne de caractères). 
+      * Nettoie le titre en supprimant: "Télécharger", les extensions de fichier ("PDF", "DOCX", "ODT"), les tailles de fichier (ex: "0,06 Mb", "1,45 Mb"), et les dates de mise à jour en fin de ligne (ex: "- 21/03/2024").
+      * Exemple: "Télécharger 2024-01-11-CP- Surveillance des piscinesPDF - 0,06 Mb - 21/03/2024" → "2024-01-11-CP- Surveillance des piscines"
+      * Exemple: "Télécharger 2024-02-01 - CP - Convention Fepem-Dreets-UrssafPDF - 0,11 Mb - 21/03/2024" → "2024-02-01 - CP - Convention Fepem-Dreets-Urssaf"
+      * Conserve les préfixes comme "CP", "DP", "NAR" s'ils sont présents dans le titre.
+    - link: L'URL complète (absolue) du lien de téléchargement vers le document (PDF, DOCX, ODT, etc.) OU l'URL de la page de détail du document. 
+      * IMPORTANT: Chaque document DOIT avoir son propre lien unique, différent de l'URL de la page actuelle ({page_url})
+      * Si le lien est relatif, construis-le à partir de l'URL de base : {page_url}
+      * Ne renvoie JAMAIS l'URL de la page actuelle comme lien pour un document
+      * Cherche les attributs href des balises <a> qui pointent vers des fichiers ou des pages de documents
+      * (obligatoire, chaîne de caractères)
+    - date_updated: La date de mise à jour ou de publication du document au format DD/MM/YYYY. 
+      * PRIORITÉ 1: Extrais la date depuis le nom du fichier ou le titre si elle est au format YYYY-MM-DD (ex: "2024-01-11" dans le titre → convertis en "11/01/2024")
+      * PRIORITÉ 2: Si une date est mentionnée dans le contexte (mois de la section, date de publication), utilise-la
+      * PRIORITÉ 3: Si aucune date n'est trouvée, utilise la date du jour (obligatoire, chaîne de caractères au format DD/MM/YYYY)
     
     Format JSON attendu :
     {{
         "arretes": [
             {{
-                "title": "",
-                "link": "",
-                "date_updated": ""
+                "title": "2024-01-11-CP- Surveillance des piscines",
+                "link": "https://www.example.com/path/to/document.pdf",
+                "date_updated": "11/01/2024"
+            }},
+            {{
+                "title": "2024-02-01 - CP - Convention Fepem-Dreets-Urssaf",
+                "link": "https://www.example.com/path/to/another-document.pdf",
+                "date_updated": "01/02/2024"
             }}
         ]
     }}
     
-    Important :
-    - Ne renvoie que les arrêtés préfectoraux, pas les autres types de documents
+    Instructions importantes :
+    - Extrais TOUS les documents téléchargeables listés sur la page, même s'ils sont organisés par mois (ex: "Janvier :", "Février :", "Mars :", etc.)
+    - Les documents peuvent être des PDF, DOCX, ODT, ou autres formats de fichiers, OU des liens vers des pages de détail
+    - Cherche les liens de téléchargement (balises <a> avec href pointant vers des fichiers) OU les liens vers les pages de détail des documents
+    - Le titre peut être dans le texte du lien, dans un élément adjacent, ou dans le texte de la page
+    - Si plusieurs documents sont listés sous un mois, extrais-les TOUS
+    - CRITIQUE: Chaque document DOIT avoir un lien unique et différent. Si plusieurs documents ont le même lien que la page actuelle ({page_url}), c'est une ERREUR - cherche mieux les liens individuels dans le HTML
+    - Pour chaque document, trouve le lien href associé dans la balise <a> qui contient ou est proche du titre du document
+    - Pour nettoyer les titres, supprime systématiquement: "Télécharger", les extensions ("PDF", "DOCX", "ODT"), les tailles ("0,06 Mb", "1,45 Mb"), et les dates de mise à jour en fin ("- 21/03/2024")
+    - Pour les dates, cherche PRIORITAIREMENT le format YYYY-MM-DD dans le nom du fichier ou le titre (ex: "2024-01-11" → convertis en "11/01/2024")
+    - Si la date est au format YYYY-MM-DD, convertis-la systématiquement en DD/MM/YYYY
     - Assure-toi que tous les liens sont des URLs absolues complètes (commençant par http:// ou https://)
-    - Si un arrêté n'a pas de lien direct, essaie de le construire à partir de l'URL de base : {page_url}
+    - Si un document n'a pas de lien direct, essaie de le construire à partir de l'URL de base : {page_url}
     - Extrais uniquement les informations présentes sur la page, ne crée pas de données fictives
-    - Si aucun arrêté préfectoral n'est trouvé, renvoie un tableau vide : {{"arretes": []}}
+    - Si aucun document n'est trouvé, renvoie un tableau vide : {{"arretes": []}}
+    
+    Si tu vois une section "=== LINKS FOUND ON PAGE ===" dans le texte, utilise ces liens pour extraire les URLs des documents. 
+    Chaque ligne de cette section montre le texte du lien et son URL associée. Assure-toi d'utiliser ces URLs spécifiques, 
+    pas l'URL de la page actuelle.
     
     Voici le contenu de la page à analyser :
     {trimmed_text}
@@ -252,7 +415,8 @@ def extract_arretes_prefectoraux_from_page(page_text: str, page_url: str) -> Lis
     
     try:
         logger.info("[MULTI-DOC] Calling OpenAI API to extract arrêtés préfectoraux...")
-        result = call_openai_api(prompt, response_format=ArretesList)
+        logger.info("[MULTI-DOC] Using model: gpt-5-mini")
+        result = call_openai_api(prompt, model="gpt-5-mini", response_format=ArretesList)
         logger.info(f"[MULTI-DOC] OpenAI API returned {len(result.arretes)} arrêtés préfectoraux")
         
         extracted_arretes = []
@@ -270,11 +434,23 @@ def extract_arretes_prefectoraux_from_page(page_text: str, page_url: str) -> Lis
                 skipped_count += 1
                 continue
             
+            # Validate that link is not the same as the page URL
+            if arrete.link == page_url or arrete.link.rstrip('/') == page_url.rstrip('/'):
+                logger.warning(f"[MULTI-DOC] Skipping arrêté #{idx} '{arrete.title}': link is the same as page URL (likely extraction error)")
+                skipped_count += 1
+                continue
+            
             # Ensure link is absolute
             original_link = arrete.link
             if not arrete.link.startswith('http'):
                 arrete.link = urljoin(page_url, arrete.link)
                 logger.debug(f"[MULTI-DOC] Converted relative link to absolute: {original_link} -> {arrete.link}")
+            
+            # Double-check after making absolute
+            if arrete.link == page_url or arrete.link.rstrip('/') == page_url.rstrip('/'):
+                logger.warning(f"[MULTI-DOC] Skipping arrêté #{idx} '{arrete.title}': link is the same as page URL after absolutization")
+                skipped_count += 1
+                continue
             
             # Create metadata with date for proper parsing in save_to_database
             metadata = {
@@ -397,9 +573,41 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     logger.error(f"[MULTI-DOC] ❌ Error fetching page content from {card.link}: {fetch_error}", exc_info=True)
                     continue
                 
-                # Extract arrêtés préfectoraux using AI
-                logger.info("[MULTI-DOC] Calling AI extraction function...")
-                extracted_arretes = extract_arretes_prefectoraux_from_page(page_text, card.link)
+                # Extract arrêtés préfectoraux - try deterministic first, then AI fallback
+                logger.info("[MULTI-DOC] Attempting deterministic extraction first...")
+                extracted_arretes = extract_arretes_prefectoraux_deterministic(card.link)
+                
+                # If deterministic extraction found nothing, fall back to AI
+                if not extracted_arretes:
+                    logger.info("[MULTI-DOC] Deterministic extraction found no documents, falling back to AI extraction...")
+                    # For AI extraction, we need HTML structure to extract links properly
+                    # Fetch the HTML soup to get better context
+                    from .scraper import fetch_page_soup
+                    try:
+                        soup = fetch_page_soup(card.link)
+                        # Include HTML structure hints in the text for AI
+                        # Extract all links with their text for context
+                        links_info = []
+                        for link in soup.find_all("a", href=True):
+                            href = link.get("href", "")
+                            text = link.get_text(strip=True)
+                            if href and text:
+                                # Make href absolute for clarity
+                                from urllib.parse import urljoin
+                                absolute_href = urljoin(card.link, href) if not href.startswith('http') else href
+                                # Skip links that are the same as the page URL
+                                if absolute_href != card.link and absolute_href.rstrip('/') != card.link.rstrip('/'):
+                                    links_info.append(f"LINK: '{text}' -> {absolute_href}")
+                        
+                        if links_info:
+                            page_text_with_links = page_text + "\n\n=== LINKS FOUND ON PAGE ===\n" + "\n".join(links_info[:100])  # Limit to first 100 links
+                            logger.info(f"[MULTI-DOC] Added {len(links_info)} links to AI context")
+                            extracted_arretes = extract_arretes_prefectoraux_from_page_ai(page_text_with_links, card.link)
+                        else:
+                            extracted_arretes = extract_arretes_prefectoraux_from_page_ai(page_text, card.link)
+                    except Exception as soup_error:
+                        logger.warning(f"[MULTI-DOC] Could not fetch HTML soup for link extraction: {soup_error}")
+                        extracted_arretes = extract_arretes_prefectoraux_from_page_ai(page_text, card.link)
                 
                 if not extracted_arretes:
                     logger.warning(f"[MULTI-DOC] ⚠️  No arrêtés préfectoraux extracted from multi-document page: {card.link}")
