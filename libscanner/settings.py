@@ -26,7 +26,7 @@ SECRET_KEY = os.environ.get('SECRET_KEY', "django-insecure-y9%mk+xyws959n^hv+4$i
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 
-ALLOWED_HOSTS = ['https://animalibscanner-0bc484989484.herokuapp.com/', 'animalibscanner-0bc484989484.herokuapp.com','scan.activoice.online', '127.0.0.1']  # Configure this properly for production
+ALLOWED_HOSTS = ['animalibscanner-0bc484989484.herokuapp.com', 'scan.activoice.online', '127.0.0.1', 'localhost']
 
 
 # Application definition
@@ -136,6 +136,13 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 100000
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10MB
 
+
+# CSRF settings
+# Trust these origins for CSRF tokens (required for HTTPS in production)
+CSRF_TRUSTED_ORIGINS = [
+    'https://animalibscanner-0bc484989484.herokuapp.com',
+    'https://scan.activoice.online',
+]
 
 # Logging configuration
 LOGGING = {
