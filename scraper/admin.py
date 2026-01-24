@@ -336,6 +336,7 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
         'task_id_short',
         'name',
         'status_display',
+        'days_limit_display',
         'progress_display',
         'current_operation_display',
         'total_items_found',
@@ -381,7 +382,7 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
             'fields': ('task_id', 'name', 'status_display', 'created_at', 'started_at', 'completed_at', 'last_updated')
         }),
         ('Parameters', {
-            'fields': ('keywords', 'region_filter', 'prefecture_filter', 'output_file', 'output_format')
+            'fields': ('keywords', 'region_filter', 'prefecture_filter', 'output_file', 'output_format', 'days_limit')
         }),
         ('Progress', {
             'fields': ('current_operation_display', 'progress_percentage', 'current_prefecture', 'current_keyword')
@@ -429,6 +430,17 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
                 messages.warning(request, f'There are {running_tasks.count()} task(s) already running. Please wait for them to complete or stop them first.')
                 return redirect('admin:scraper_scrapingtask_changelist')
 
+            # Get days_limit from request parameters (default to 30)
+            try:
+                days_limit = int(request.GET.get('days_limit', 30))
+                # Validate range
+                if days_limit < 1:
+                    days_limit = 1
+                elif days_limit > 365:
+                    days_limit = 365
+            except (ValueError, TypeError):
+                days_limit = 30
+
             # Default animal keywords
             keywords = [
                 "bovin",
@@ -442,14 +454,16 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
             # Create task record
             task = ScrapingTask.objects.create(
                 keywords=keywords,
-                output_format='pretty'
+                output_format='pretty',
+                days_limit=days_limit
             )
 
             # Start Celery task
             celery_task = scrape_animal_keywords_enhanced_task.delay(
                 task_id=task.id,
                 keywords=keywords,
-                output_format='pretty'
+                output_format='pretty',
+                days_limit=days_limit
             )
 
             # Update task record with Celery task ID
@@ -459,6 +473,7 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
 
             messages.success(request, f'Animal keywords scraping task started! Task ID: {task.id}')
             messages.info(request, f'Keywords: {", ".join(keywords)}')
+            messages.info(request, f'Time range: {days_limit} days')
             messages.info(request, 'You can monitor the progress in the task list below.')
             return redirect('admin:scraper_scrapingtask_changelist')
 
@@ -513,6 +528,15 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
         return obj.task_id
     task_id_short.short_description = "Task ID"
     task_id_short.admin_order_field = "task_id"
+    
+    def days_limit_display(self, obj):
+        """Display days limit with formatting."""
+        return format_html(
+            '<span style="color: #17a2b8;">{} days</span>',
+            obj.days_limit
+        )
+    days_limit_display.short_description = "Time Range"
+    days_limit_display.admin_order_field = "days_limit"
     
     def status_display(self, obj):
         """Display status with color coding."""
@@ -616,6 +640,9 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
                 messages.warning(request, f'There are {running_tasks.count()} task(s) already running. Please wait for them to complete or stop them first.')
                 return redirect('admin:scraper_scrapingtask_changelist')
             
+            # Default values
+            days_limit = 30  # Default for admin action
+            
             # Default animal keywords
             keywords = [
                 "bovin",
@@ -629,14 +656,16 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
             # Create task record
             task = ScrapingTask.objects.create(
                 keywords=keywords,
-                output_format='pretty'
+                output_format='pretty',
+                days_limit=days_limit
             )
             
             # Start Celery task
             celery_task = scrape_animal_keywords_enhanced_task.delay(
                 task_id=task.id,
                 keywords=keywords,
-                output_format='pretty'
+                output_format='pretty',
+                days_limit=days_limit
             )
             
             # Update task record with Celery task ID
@@ -644,8 +673,9 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
             task.started_at = timezone.now()
             task.save()
             
-            messages.success(request, f'🐄 Animal keywords scraping task started! Task ID: {task.id}')
+            messages.success(request, f'Animal keywords scraping task started! Task ID: {task.id}')
             messages.info(request, f'Keywords: {", ".join(keywords)}')
+            messages.info(request, f'Time range: {days_limit} days')
             messages.info(request, 'You can monitor the progress in the task list below.')
             return redirect('admin:scraper_scrapingtask_changelist')
             

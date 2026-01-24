@@ -17,8 +17,15 @@
                     Monitor and manage document scraping operations
                 </p>
             </div>
-            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <label for="days-limit" style="font-weight: 500; color: #495057; white-space: nowrap;">Time range:</label>
+                    <input type="number" id="days-limit" value="30" min="1" max="365" 
+                           style="width: 70px; padding: 10px 12px; border: 1px solid #ced4da; border-radius: 4px; font-size: 14px;">
+                    <span style="color: #6c757d; font-size: 14px;">days</span>
+                </div>
                 <a href="{% url 'admin:scraper_scrapingtask_start_animal' %}" 
+                   id="start-scraping-btn"
                    class="action-btn start-btn"
                    style="background-color: #007bff; color: white; padding: 12px 20px; border-radius: 4px; text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; transition: all 0.2s ease; border: 1px solid #007bff;">
                     Start Scraping
@@ -34,6 +41,25 @@
 
 
     {{ block.super }}
+    
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const daysLimitInput = document.getElementById('days-limit');
+        const startBtn = document.getElementById('start-scraping-btn');
+        const baseUrl = startBtn.getAttribute('href');
+        
+        // Update the URL when days limit changes
+        function updateStartUrl() {
+            const daysLimit = daysLimitInput.value || 30;
+            startBtn.setAttribute('href', baseUrl + '?days_limit=' + daysLimit);
+        }
+        
+        // Initialize and listen for changes
+        updateStartUrl();
+        daysLimitInput.addEventListener('change', updateStartUrl);
+        daysLimitInput.addEventListener('input', updateStartUrl);
+    });
+    </script>
 {% endblock %}
 
 <style>

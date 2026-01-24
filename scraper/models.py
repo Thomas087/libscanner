@@ -91,6 +91,7 @@ class ScrapingTask(models.Model):
     prefecture_filter = models.CharField(max_length=100, blank=True, null=True, help_text="Prefecture filter")
     output_file = models.CharField(max_length=500, blank=True, null=True, help_text="Output file path")
     output_format = models.CharField(max_length=20, default='pretty', help_text="Output format")
+    days_limit = models.IntegerField(default=30, help_text="Number of days to look back when scraping")
     
     # Progress tracking
     current_operation = models.IntegerField(default=0, help_text="Current operation number")
