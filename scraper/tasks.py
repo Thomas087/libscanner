@@ -13,6 +13,51 @@ from scraper.utils import format_results_pretty
 logger = logging.getLogger('scraper')
 
 
+@shared_task(name='daily_animal_scraping_task')
+def daily_animal_scraping_task():
+    """
+    Scheduled task that runs daily at 1am to scrape animal keywords.
+    Scrapes documents from the last 2 days (current and previous day).
+    
+    This task is triggered by Celery Beat and reuses the enhanced scraping task.
+    """
+    logger.info("Starting daily scheduled animal scraping task")
+    
+    # Default animal keywords
+    keywords = [
+        "bovin",
+        "porcin",
+        "volaille",
+        "poules",
+        "pondeuses",
+        "poulets"
+    ]
+    
+    # Scrape last 2 days (current and previous day)
+    days_limit = 2
+    
+    # Create task record for tracking
+    db_task = ScrapingTask.objects.create(
+        name="daily_animal_scraping",
+        keywords=keywords,
+        output_format='pretty',
+        days_limit=days_limit
+    )
+    
+    logger.info(f"Created daily scraping task with ID: {db_task.id}, days_limit: {days_limit}")
+    
+    # Call the enhanced scraping task synchronously (we're already in a Celery task)
+    result = scrape_animal_keywords_enhanced_task(
+        task_id=db_task.id,
+        keywords=keywords,
+        output_format='pretty',
+        days_limit=days_limit
+    )
+    
+    logger.info(f"Daily scraping task completed: {result.get('status', 'UNKNOWN')}")
+    return result
+
+
 @shared_task(bind=True, name='scrape_animal_keywords_enhanced_task')
 def scrape_animal_keywords_enhanced_task(self, task_id=None, keywords=None, region_filter=None, prefecture_filter=None, output_file=None, output_format='pretty', days_limit=30):
     """

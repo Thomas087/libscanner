@@ -195,6 +195,7 @@ except ImportError:
 # Celery Configuration
 # Use proper Redis URL parsing for Heroku compatibility
 import urllib.parse
+from celery.schedules import crontab
 
 def get_redis_url():
     """Get Redis URL with proper parsing for Heroku."""
@@ -257,3 +258,12 @@ CELERY_RESULT_BACKEND_CONNECTION_RETRY_DELAY = 1.0
 CELERY_TASK_REJECT_ON_WORKER_LOST = True
 CELERY_TASK_ACKS_LATE = True
 CELERY_WORKER_DISABLE_RATE_LIMITS = True
+
+# Celery Beat schedule for periodic tasks
+CELERY_BEAT_SCHEDULE = {
+    'daily-animal-scraping': {
+        'task': 'daily_animal_scraping_task',
+        'schedule': crontab(hour=1, minute=0),  # Run every day at 1:00 AM (Europe/Paris timezone)
+        'options': {'queue': 'celery'},
+    },
+}
