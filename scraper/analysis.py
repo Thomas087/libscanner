@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from .constants import get_prefecture_by_domain
 from .models import GovernmentDocument, NegativeKeyword
-from .scraper import ScrapedCard, extract_pdf_links_from_page
+from .scraper import CONFIG, ScrapedCard, extract_pdf_links_from_page
 
 from llm_api.views import call_openai_api
 
@@ -481,7 +481,7 @@ def extract_arretes_prefectoraux_from_page_ai(page_text: str, page_url: str) -> 
 # Database Operations
 # ------------------------------------------------------------------------------
 
-def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timezone.now) -> int:
+def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timezone.now, days_limit: int = None) -> int:
     """
     Persist scraped items with minimal memory usage:
     - Process items one-by-one with immediate DB operations
@@ -495,7 +495,11 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
     if not scraped_cards:
         return 0
 
-    logger.info(f"Processing {len(scraped_cards)} scraped cards for domain: {domain}")
+    # Use default from ScraperConfig if not specified
+    if days_limit is None:
+        days_limit = CONFIG.cleanup_window_days
+
+    logger.info(f"Processing {len(scraped_cards)} scraped cards for domain: {domain} (days_limit: {days_limit})")
 
     prefecture_info = get_prefecture_by_domain(domain)
     pref_name = prefecture_info["name"] if prefecture_info else None
@@ -622,7 +626,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                 for idx, extracted_arrete in enumerate(extracted_arretes, 1):
                     logger.info(f"[MULTI-DOC] Processing extracted arrêté {idx}/{len(extracted_arretes)}: '{extracted_arrete.title}'")
                     # Recursively process each extracted arrêté as a regular card
-                    saved_count = save_to_database([extracted_arrete], domain)
+                    saved_count = save_to_database([extracted_arrete], domain, days_limit=days_limit)
                     total_extracted_saved += saved_count
                     logger.info(f"[MULTI-DOC] Extracted arrêté {idx}/{len(extracted_arretes)} processed: {saved_count} record(s) saved")
                 
@@ -633,9 +637,9 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                 # Skip normal processing for the multi-document page itself
                 continue
 
-            #skip the record if it more than 30 days
-            if date_updated < timezone.now() - timedelta(days=30):
-                logger.info(f"Skipping record more than 30 days old: '{card.title}' - {card.link}")
+            # Skip the record if it's older than the days_limit
+            if date_updated < timezone.now() - timedelta(days=days_limit):
+                logger.info(f"Skipping record more than {days_limit} days old: '{card.title}' - {card.link}")
                 continue
 
             # Check if record already exists with same link AND date_updated
@@ -870,31 +874,40 @@ def remove_documents_with_negative_keywords() -> int:
 # High-level scraping orchestration
 # ------------------------------------------------------------------------------
 
-def scrape_all_results(domain: str, keyword: str) -> List[Dict[str, Any]]:
+def scrape_all_results(domain: str, keyword: str, days_limit: int = None) -> List[Dict[str, Any]]:
     """
     Scrape all pages, persist results one item at a time with memory cleanup.
     Returns metadata about items (count, sample) instead of all items to reduce memory.
 
     For backward compatibility, still returns list of dicts but processes items individually.
+    
+    Args:
+        domain: The domain to scrape
+        keyword: The keyword to search for
+        days_limit: Number of days to look back (default: uses ScraperConfig.cleanup_window_days which is 30)
     """
     from .scraper import iterate_search_pages, fetch_page_soup, fetch_page_text, extract_text_from_pdf
     import gc
     
+    # Use default from ScraperConfig if not specified
+    if days_limit is None:
+        days_limit = CONFIG.cleanup_window_days
+
     logger.info("=" * 80)
-    logger.info(f"Starting full scrape for domain: {domain}, keyword: '{keyword}'")
+    logger.info(f"Starting full scrape for domain: {domain}, keyword: '{keyword}', days_limit: {days_limit}")
     logger.info("=" * 80)
 
     total_saved = 0
     total_count = 0
 
-    for page in iterate_search_pages(domain, keyword):
+    for page in iterate_search_pages(domain, keyword, days_limit=days_limit):
         total_count += len(page)
         logger.debug(f"Processing page with {len(page)} items, total scraped so far: {total_count}")
 
         # Process each item individually
         for item in page:
             logger.debug(f"Processing individual item: '{item.title}'")
-            saved_count = save_to_database([item], domain)
+            saved_count = save_to_database([item], domain, days_limit=days_limit)
             total_saved += saved_count
             
             # Clear memory after each item

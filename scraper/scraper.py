@@ -459,18 +459,57 @@ def extract_card_data(card_element, domain: Optional[str] = None) -> Optional[Sc
 # Scraping flows
 # ------------------------------------------------------------------------------
 
-def build_search_url(domain: str, keyword: str, offset: int = 0) -> str:
+def build_search_url(domain: str, keyword: str, offset: int = 0, days_limit: int = None) -> str:
+    """
+    Build a search URL with optional date filtering.
+    
+    Args:
+        domain: The government domain to search
+        keyword: The search keyword
+        offset: Pagination offset
+        days_limit: Number of days to look back (default: uses CONFIG.cleanup_window_days)
+    
+    Returns:
+        The constructed search URL with date filters
+    """
+    from datetime import datetime, timedelta
+    
+    # Use default from config if not specified
+    if days_limit is None:
+        days_limit = CONFIG.cleanup_window_days
+    
+    # Calculate date range (today and days_limit days ago)
+    today = datetime.now()
+    start_date = today - timedelta(days=days_limit - 1)  # -1 to include today in the count
+    
+    # Format dates as YYYY-MM-DD
+    start_date_str = start_date.strftime("%Y-%m-%d")
+    end_date_str = today.strftime("%Y-%m-%d")
+    
+    # Build base URL
     if offset > 0:
-        return f"https://www.{domain}/contenu/recherche/(offset)/{offset}/(searchtext)/{keyword}?SearchText={keyword}"
-    return f"https://www.{domain}/contenu/recherche/(searchtext)/{keyword}?SearchText={keyword}"
+        base_url = f"https://www.{domain}/contenu/recherche/(offset)/{offset}/(searchtext)/{keyword}?SearchText={keyword}"
+    else:
+        base_url = f"https://www.{domain}/contenu/recherche/(searchtext)/{keyword}?SearchText={keyword}"
+    
+    # Add date filter parameters
+    date_params = f"&dateFilter[]={start_date_str}&dateFilter[]={end_date_str}&typedate=1"
+    
+    return base_url + date_params
 
 
-def scrape_government_site(domain: str, keyword: str, offset: int = 0) -> List[ScrapedCard]:
+def scrape_government_site(domain: str, keyword: str, offset: int = 0, days_limit: int = None) -> List[ScrapedCard]:
     """
     Scrape a single search results page and return cards.
+    
+    Args:
+        domain: The government domain to search
+        keyword: The search keyword
+        offset: Pagination offset
+        days_limit: Number of days to look back (default: uses CONFIG.cleanup_window_days)
     """
     try:
-        url = build_search_url(domain, keyword, offset)
+        url = build_search_url(domain, keyword, offset, days_limit)
         logger.info(f"Scraping page at offset {offset}: {url}")
         soup = fetch_page_soup(url)
         cards = soup.find_all("div", class_="fr-card")
@@ -491,16 +530,26 @@ def scrape_government_site(domain: str, keyword: str, offset: int = 0) -> List[S
 
 
 def iterate_search_pages(
-    domain: str, keyword: str, *, start: int = 0, step: int = CONFIG.page_step, limit: int = CONFIG.max_offset
+    domain: str, keyword: str, *, start: int = 0, step: int = CONFIG.page_step, limit: int = CONFIG.max_offset, days_limit: int = None
 ) -> Iterable[List[ScrapedCard]]:
     """
     Generator that yields results page-by-page until exhaustion or limit.
+    
+    Args:
+        domain: The government domain to search
+        keyword: The search keyword
+        start: Starting offset for pagination
+        step: Pagination step size
+        limit: Maximum offset to paginate to
+        days_limit: Number of days to look back (default: uses CONFIG.cleanup_window_days)
     """
-    logger.info(f"Starting pagination for {domain} with keyword '{keyword}' (start={start}, step={step}, limit={limit})")
+    if days_limit is None:
+        days_limit = CONFIG.cleanup_window_days
+    logger.info(f"Starting pagination for {domain} with keyword '{keyword}' (start={start}, step={step}, limit={limit}, days_limit={days_limit})")
     offset = start
     page_count = 0
     while offset <= limit:
-        page = scrape_government_site(domain, keyword, offset)
+        page = scrape_government_site(domain, keyword, offset, days_limit)
         if not page:
             logger.info(f"No more results found at offset {offset}, stopping pagination")
             break
@@ -515,9 +564,15 @@ def iterate_search_pages(
     logger.info(f"Pagination complete: scraped {page_count} pages for {domain}")
 
 
-def scrape_url(domain: str, keyword: str, offset: int = 0) -> List[Dict[str, Any]]:
+def scrape_url(domain: str, keyword: str, offset: int = 0, days_limit: int = None) -> List[Dict[str, Any]]:
     """
     Backwards-compatible wrapper (returns dicts).
+    
+    Args:
+        domain: The government domain to search
+        keyword: The search keyword
+        offset: Pagination offset
+        days_limit: Number of days to look back (default: uses CONFIG.cleanup_window_days)
     """
-    cards = scrape_government_site(domain, keyword, offset)
+    cards = scrape_government_site(domain, keyword, offset, days_limit)
     return [card.__dict__ for card in cards]

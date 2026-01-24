@@ -14,7 +14,7 @@ logger = logging.getLogger('scraper')
 
 
 @shared_task(bind=True, name='scrape_animal_keywords_enhanced_task')
-def scrape_animal_keywords_enhanced_task(self, task_id=None, keywords=None, region_filter=None, prefecture_filter=None, output_file=None, output_format='pretty'):
+def scrape_animal_keywords_enhanced_task(self, task_id=None, keywords=None, region_filter=None, prefecture_filter=None, output_file=None, output_format='pretty', days_limit=30):
     """
     Enhanced Celery task to scrape animal keywords with database tracking.
     
@@ -25,6 +25,7 @@ def scrape_animal_keywords_enhanced_task(self, task_id=None, keywords=None, regi
         prefecture_filter: Filter by specific prefecture
         output_file: Optional output file path
         output_format: Output format ('json' or 'pretty')
+        days_limit: Number of days to look back when scraping (default: 30)
     
     Returns:
         dict: Results of the scraping operation
@@ -63,7 +64,7 @@ def scrape_animal_keywords_enhanced_task(self, task_id=None, keywords=None, regi
             'error': 'Task record not found'
         }
     
-    logger.info(f"Starting enhanced Celery task for scraping with {len(keywords)} keywords")
+    logger.info(f"Starting enhanced Celery task for scraping with {len(keywords)} keywords, days_limit={days_limit}")
     
     # Filter prefectures based on arguments
     prefectures_to_scrape = PREFECTURES.copy()
@@ -138,7 +139,7 @@ def scrape_animal_keywords_enhanced_task(self, task_id=None, keywords=None, regi
                     ).count()
 
                     # Scrape and save to database (returns empty list to save memory)
-                    scrape_all_results(prefecture['domain'], keyword)
+                    scrape_all_results(prefecture['domain'], keyword, days_limit=days_limit)
 
                     # Get count after scraping to determine new items
                     after_count = GovernmentDocument.objects.filter(
