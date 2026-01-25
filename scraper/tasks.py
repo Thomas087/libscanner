@@ -6,7 +6,7 @@ import logging
 from celery import shared_task
 from django.utils import timezone
 from scraper.analysis import scrape_all_results
-from scraper.constants import PREFECTURES, get_prefectures_by_region
+from scraper.constants import PREFECTURES, ANIMAL_KEYWORDS, get_prefectures_by_region
 from scraper.models import ScrapingTask, ScrapingTaskResult
 from scraper.utils import format_results_pretty
 
@@ -23,16 +23,8 @@ def daily_animal_scraping_task():
     """
     logger.info("Starting daily scheduled animal scraping task")
     
-    # Default animal keywords
-    keywords = [
-        "bovin",
-        "porcin",
-        "volaille",
-        "poules",
-        "pondeuses",
-        "poulets"
-    ]
-    
+    keywords = list(ANIMAL_KEYWORDS)
+
     # Scrape last 2 days (current and previous day)
     days_limit = 2
     
@@ -75,16 +67,8 @@ def scrape_animal_keywords_enhanced_task(self, task_id=None, keywords=None, regi
     Returns:
         dict: Results of the scraping operation
     """
-    # Default animal keywords if none provided
     if keywords is None:
-        keywords = [
-            "bovin",
-            "porcin", 
-            "volaille",
-            "poules",
-            "pondeuses",
-            "poulets"
-        ]
+        keywords = list(ANIMAL_KEYWORDS)
     
     # Get or create the database task record
     try:

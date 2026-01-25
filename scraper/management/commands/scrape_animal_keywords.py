@@ -5,7 +5,7 @@ import json
 import logging
 from django.core.management.base import BaseCommand, CommandError
 from scraper.analysis import scrape_all_results
-from scraper.constants import PREFECTURES, get_prefectures_by_region, get_all_regions
+from scraper.constants import PREFECTURES, ANIMAL_KEYWORDS, get_prefectures_by_region, get_all_regions
 from scraper.utils import format_results_pretty
 
 logger = logging.getLogger('scraper')
@@ -13,16 +13,6 @@ logger = logging.getLogger('scraper')
 
 class Command(BaseCommand):
     help = 'Scrape all prefecture government websites for animal-related keywords'
-
-    # Define the keywords to search for
-    ANIMAL_KEYWORDS = [
-        "bovin",
-        "porcin",
-        "volaille",
-        "poules",
-        "pondeuses",
-        "poulets"
-    ]
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -95,7 +85,7 @@ class Command(BaseCommand):
 
         if options['list_keywords']:
             self.stdout.write("Default animal keywords:")
-            for i, keyword in enumerate(self.ANIMAL_KEYWORDS, 1):
+            for i, keyword in enumerate(ANIMAL_KEYWORDS, 1):
                 self.stdout.write(f"  {i}. {keyword}")
             return
 
@@ -104,7 +94,7 @@ class Command(BaseCommand):
             return self._check_task_status(options['task_id'])
 
         # Determine keywords to use
-        keywords = options.get('keywords') or self.ANIMAL_KEYWORDS
+        keywords = options.get('keywords') or list(ANIMAL_KEYWORDS)
         region_filter = options.get('region')
         prefecture_filter = options.get('prefecture')
         output_file = options.get('output')

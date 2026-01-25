@@ -129,6 +129,18 @@ PREFECTURES = [
 ]
 
 
+# Default animal/livestock keywords for scraping
+ANIMAL_KEYWORDS = [
+    "bovin",
+    "porcin",
+    "volaille",
+    "poules",
+    "pondeuses",
+    "poulets",
+    "cochons",
+]
+
+
 # Helper functions for working with prefecture data
 def get_prefectures_by_region(region_name):
     """

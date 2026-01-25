@@ -6,6 +6,7 @@ from django.contrib import messages
 from django.http import JsonResponse
 from django.utils import timezone
 from .models import GovernmentDocument, NegativeKeyword, ScrapingTask, ScrapingTaskResult
+from .constants import ANIMAL_KEYWORDS
 from .tasks import scrape_animal_keywords_enhanced_task
 
 
@@ -441,15 +442,7 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
             except (ValueError, TypeError):
                 days_limit = 30
 
-            # Default animal keywords
-            keywords = [
-                "bovin",
-                "porcin",
-                "volaille",
-                "poules",
-                "pondeuses",
-                "poulets"
-            ]
+            keywords = list(ANIMAL_KEYWORDS)
 
             # Create task record
             task = ScrapingTask.objects.create(
@@ -643,23 +636,15 @@ class ScrapingTaskAdmin(admin.ModelAdmin):
             # Default values
             days_limit = 30  # Default for admin action
             
-            # Default animal keywords
-            keywords = [
-                "bovin",
-                "porcin", 
-                "volaille",
-                "poules",
-                "pondeuses",
-                "poulets"
-            ]
-            
+            keywords = list(ANIMAL_KEYWORDS)
+
             # Create task record
             task = ScrapingTask.objects.create(
                 keywords=keywords,
                 output_format='pretty',
                 days_limit=days_limit
             )
-            
+
             # Start Celery task
             celery_task = scrape_animal_keywords_enhanced_task.delay(
                 task_id=task.id,

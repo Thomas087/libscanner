@@ -5,6 +5,7 @@ import logging
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 from scraper.models import ScrapingTask
+from scraper.constants import ANIMAL_KEYWORDS
 from scraper.tasks import scrape_animal_keywords_enhanced_task
 
 logger = logging.getLogger('scraper')
@@ -31,16 +32,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        # Default animal keywords
-        keywords = [
-            "bovin",
-            "porcin", 
-            "volaille",
-            "poules",
-            "pondeuses",
-            "poulets"
-        ]
-        
+        keywords = list(ANIMAL_KEYWORDS)
         region_filter = options.get('region')
         prefecture_filter = options.get('prefecture')
         output_file = options.get('output')

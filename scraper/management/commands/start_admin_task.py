@@ -4,6 +4,7 @@ Django management command to start a scraping task for admin testing.
 import logging
 from django.core.management.base import BaseCommand
 from django.utils import timezone
+from scraper.constants import ANIMAL_KEYWORDS
 from scraper.models import ScrapingTask
 from scraper.tasks import scrape_animal_keywords_enhanced_task
 
@@ -18,8 +19,8 @@ class Command(BaseCommand):
             '--keywords',
             type=str,
             nargs='+',
-            default=['bovin', 'porcin'],
-            help='Keywords to search for (default: bovin, porcin)'
+            default=None,
+            help='Keywords to search for (default: first two animal keywords: bovin, porcin)'
         )
         parser.add_argument(
             '--region',
@@ -38,7 +39,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        keywords = options['keywords']
+        keywords = options['keywords'] or list(ANIMAL_KEYWORDS[:2])
         region_filter = options.get('region')
         prefecture_filter = options.get('prefecture')
         output_file = options.get('output')
