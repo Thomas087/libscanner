@@ -26,7 +26,7 @@ SECRET_KEY = os.environ.get('SECRET_KEY', "django-insecure-y9%mk+xyws959n^hv+4$i
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 
-ALLOWED_HOSTS = ['animalibscanner-0bc484989484.herokuapp.com', 'scan.activoice.online', '127.0.0.1', 'localhost']
+ALLOWED_HOSTS = ['animalibscanner-0bc484989484.herokuapp.com', 'scan.activoice.online', '127.0.0.1', 'localhost', 'scan.activoice.org']
 
 
 # Application definition
