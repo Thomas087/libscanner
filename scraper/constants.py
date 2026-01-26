@@ -169,12 +169,3 @@ def get_prefecture_by_domain(domain):
             return prefecture
     return None
 
-def get_all_regions():
-    """
-    Get list of all unique regions.
-    
-    Returns:
-        list: List of unique region names
-    """
-    return list(set(p['region'] for p in PREFECTURES))
-

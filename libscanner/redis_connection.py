@@ -13,8 +13,6 @@ def get_redis_connection():
     Create a Redis connection using the proper Heroku Redis URL parsing.
     Based on: https://devcenter.heroku.com/articles/heroku-redis#connecting-in-python
     """
-    # Get Redis URL from Django settings (which handles Heroku URL parsing)
-    from django.conf import settings
     redis_url = getattr(settings, 'REDIS_URL', os.environ.get('REDISCLOUD_URL') or os.environ.get('REDIS_URL'))
     
     if not redis_url:
@@ -50,45 +48,3 @@ def get_redis_connection():
             return r
         except Exception as fallback_error:
             raise Exception(f"Redis connection failed: {e}. Fallback also failed: {fallback_error}")
-
-
-def test_redis_connection():
-    """
-    Test Redis connection and return status information.
-    """
-    try:
-        r = get_redis_connection()
-        
-        # Test basic operations
-        r.set('test_key', 'test_value', ex=60)  # Set with 60 second expiration
-        value = r.get('test_key')
-        r.delete('test_key')
-        
-        if value == 'test_value':
-            return True, "Redis connection successful"
-        else:
-            return False, "Redis set/get test failed"
-            
-    except Exception as e:
-        return False, f"Redis connection failed: {e}"
-
-
-def get_redis_info():
-    """
-    Get Redis connection information for debugging.
-    """
-    try:
-        r = get_redis_connection()
-        info = r.info()
-        return {
-            'connected': True,
-            'redis_version': info.get('redis_version'),
-            'used_memory': info.get('used_memory_human'),
-            'connected_clients': info.get('connected_clients'),
-            'uptime': info.get('uptime_in_seconds')
-        }
-    except Exception as e:
-        return {
-            'connected': False,
-            'error': str(e)
-        }

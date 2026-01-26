@@ -1,76 +1,8 @@
 import os
-from typing import Optional, Type, Any
-from mistralai import Mistral
 from openai import OpenAI
-from pydantic import BaseModel
 
 from dotenv import load_dotenv
 load_dotenv()
-
-
-# Example Pydantic models for structured responses
-class CalendarEvent(BaseModel):
-    """Model for calendar event extraction."""
-    name: str
-    date: str
-    participants: list[str]
-
-
-class DocumentSummary(BaseModel):
-    """Model for document summarization."""
-    title: str
-    summary: str
-    key_points: list[str]
-    sentiment: str
-
-
-class CodeAnalysis(BaseModel):
-    """Model for code analysis."""
-    language: str
-    complexity: str
-    issues: list[str]
-    suggestions: list[str]
-
-def call_mistral_api(prompt, model="mistral-small-2506"):
-    """
-    Simple function to call Mistral API with a provided prompt.
-    
-    Args:
-        prompt (str): The prompt/question to send to Mistral
-        model (str): The Mistral model to use (default: "mistral-small-2506")
-    
-    Returns:
-        str: The response from Mistral API
-        
-    Raises:
-        ValueError: If MISTRAL_API_KEY environment variable is not set
-        Exception: If API call fails
-    """
-    # Get API key from environment variables
-    api_key = os.environ.get("MISTRAL_API_KEY")
-    if not api_key:
-        raise ValueError("MISTRAL_API_KEY environment variable is not set")
-    
-    try:
-        # Initialize Mistral client
-        client = Mistral(api_key=api_key)
-        
-        # Make the API call
-        chat_response = client.chat.complete(
-            model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
-            ]
-        )
-        
-        # Extract and return the response content
-        return chat_response.choices[0].message.content
-        
-    except Exception as e:
-        raise Exception(f"Failed to call Mistral API: {str(e)}")
 
 
 def call_openai_api(prompt, model="gpt-5-nano", response_format=None, system_message=None):

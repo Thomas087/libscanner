@@ -562,17 +562,3 @@ def iterate_search_pages(
             _requester.reset()
 
     logger.info(f"Pagination complete: scraped {page_count} pages for {domain}")
-
-
-def scrape_url(domain: str, keyword: str, offset: int = 0, days_limit: int = None) -> List[Dict[str, Any]]:
-    """
-    Backwards-compatible wrapper (returns dicts).
-    
-    Args:
-        domain: The government domain to search
-        keyword: The search keyword
-        offset: Pagination offset
-        days_limit: Number of days to look back (default: uses CONFIG.cleanup_window_days)
-    """
-    cards = scrape_government_site(domain, keyword, offset, days_limit)
-    return [card.__dict__ for card in cards]
