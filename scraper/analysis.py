@@ -19,7 +19,7 @@ from .constants import get_prefecture_by_domain
 from .models import GovernmentDocument, NegativeKeyword
 from .scraper import CONFIG, ScrapedCard, extract_pdf_links_from_page
 
-from llm_api.views import call_openai_api
+from llm_api.views import call_llm_api, PROVIDER_DEEPSEEK
 
 # ------------------------------------------------------------------------------
 # Logging
@@ -170,6 +170,15 @@ def get_document_info(full_page_text: str) -> str:
     - is_animal_project: le booléen indiquant si le texte est lié à un projet d'élevage animal
     - animal_type: le type d'animal (ovin, caprin, bovin, porcin, volaille) si le projet est un projet d'élevage animal, sinon renvoie None
     - animal_number: le nombre d'animaux (nombre) si le projet est un projet d'élevage animal si il est précisé, sinon renvoie None
+
+    Renvoie un JSON au format suivant :
+    {{
+        "summary": "Un résumé du texte en français (uniquement en français) et en 100 mots maximum.",
+        "is_animal_project": bool,
+        "animal_type": str,
+        "animal_number": int
+    }}
+
     Voici le texte à analyser :
     {trimmed_text}"""
 
@@ -180,7 +189,7 @@ def get_document_info(full_page_text: str) -> str:
         animal_number: Optional[int] = None
 
     # summary = call_mistral_api(prompt)
-    document_info = call_openai_api(prompt, response_format=PrefectureDocumentSummary)
+    document_info = call_llm_api(prompt, response_format=PrefectureDocumentSummary, provider=PROVIDER_DEEPSEEK)
     return document_info
 
 
@@ -192,9 +201,15 @@ def check_if_intensive_farming(summary: str) -> bool:
     prompt = f"""
     Analyse le texte ci-dessous et renvoie un booléen indiquant si le projet est lié l'élevage intensif d'animaux.
     Le texte est plus suceptible d'être un projet d'élevage intensif d'animaux si il contient des mentions d'élevage animal et certains des mots suivants : Enquête publique , Consultation du public, 3660, Déclaration, Déclaration initiale, Poulets, Cochons, DUC, Poules
+    
+    Renvoie un JSON au format suivant :
+    {{
+        "is_intensive_farming": bool
+    }}
+    
     Voici le texte à analyser :
     {summary}"""
-    return call_openai_api(prompt, response_format=IntensiveFarmingCheck)
+    return call_llm_api(prompt, response_format=IntensiveFarmingCheck, provider=PROVIDER_DEEPSEEK)
 
 
 def extract_arretes_prefectoraux_deterministic(page_url: str) -> List[ScrapedCard]:
@@ -414,10 +429,10 @@ def extract_arretes_prefectoraux_from_page_ai(page_text: str, page_url: str) -> 
         arretes: List[ArretePrefectoral]
     
     try:
-        logger.info("[MULTI-DOC] Calling OpenAI API to extract arrêtés préfectoraux...")
-        logger.info("[MULTI-DOC] Using model: gpt-5-mini")
-        result = call_openai_api(prompt, model="gpt-5-mini", response_format=ArretesList)
-        logger.info(f"[MULTI-DOC] OpenAI API returned {len(result.arretes)} arrêtés préfectoraux")
+        logger.info("[MULTI-DOC] Calling LLM API to extract arrêtés préfectoraux...")
+        logger.info("[MULTI-DOC] Using model: deepseek-chat (DeepSeek)")
+        result = call_llm_api(prompt, model="deepseek-chat", response_format=ArretesList, provider=PROVIDER_DEEPSEEK)
+        logger.info(f"[MULTI-DOC] LLM API returned {len(result.arretes)} arrêtés préfectoraux")
         
         extracted_arretes = []
         skipped_count = 0
