@@ -14,8 +14,7 @@ class GovernmentDocument(models.Model):
     full_page_text = models.TextField(blank=True, null=True, help_text="Full text content of the scraped page")
     link = models.URLField(max_length=2048, unique=True, help_text="URL to the document on the government website")
     date_updated = models.DateTimeField(help_text="Date when the document was last updated on the government website")
-    is_animal_project = models.BooleanField(default=False, help_text="Whether this document is related to an animal project")
-    is_intensive_farming = models.BooleanField(default=False, help_text="Whether this document is related to intensive farming")
+    is_animal_farming_project = models.BooleanField(default=False, help_text="Whether this document is related to an animal farming project")
     animal_type = models.CharField(max_length=100, blank=True, null=True, help_text="Type of animal if this document is related to an animal project")
     animal_number = models.IntegerField(blank=True, null=True, help_text="Number of animals if this document is related to an animal project")
 

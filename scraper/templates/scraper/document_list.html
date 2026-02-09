@@ -385,27 +385,20 @@
         <div class="filters">
             <h3>Filtres</h3>
             
-            <!-- Document Type Filters -->
+            <!-- Document Type Tabs -->
             <div class="document-type-filters">
-                <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={% if show_intensive %}false{% else %}true{% endif %}&other_animal={{ show_other_animal|yesno:'true,false' }}&other_docs={{ show_other_docs|yesno:'true,false' }}" 
-                   class="filter-toggle {% if show_intensive %}active{% endif %}">
-                    Élevage intensif
+                <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}tab=animal" 
+                   class="filter-toggle {% if show_animal_farming %}active{% endif %}">
+                    Élevage animal
                 </a>
-                <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={{ show_intensive|yesno:'true,false' }}&other_animal={% if show_other_animal %}false{% else %}true{% endif %}&other_docs={{ show_other_docs|yesno:'true,false' }}" 
-                   class="filter-toggle {% if show_other_animal %}active{% endif %}">
-                    Autres élevages
-                </a>
-                <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={{ show_intensive|yesno:'true,false' }}&other_animal={{ show_other_animal|yesno:'true,false' }}&other_docs={% if show_other_docs %}false{% else %}true{% endif %}" 
-                   class="filter-toggle {% if show_other_docs %}active{% endif %}">
+                <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}tab=other" 
+                   class="filter-toggle {% if not show_animal_farming %}active{% endif %}">
                     Autres documents
                 </a>
             </div>
             
             <form method="get" id="filter-form">
-                <!-- Hidden inputs to preserve document type filters -->
-                <input type="hidden" name="intensive" value="{{ show_intensive|yesno:'true,false' }}">
-                <input type="hidden" name="other_animal" value="{{ show_other_animal|yesno:'true,false' }}">
-                <input type="hidden" name="other_docs" value="{{ show_other_docs|yesno:'true,false' }}">
+                <input type="hidden" name="tab" value="{% if show_animal_farming %}animal{% else %}other{% endif %}">
                 
                 <div class="filter-row">
                     <div class="filter-group">
@@ -457,11 +450,8 @@
                                 {% if document.region_name %}
                                     <span>🗺️ {{ document.region_name }}</span>
                                 {% endif %}
-                                {% if document.is_animal_project %}
+                                {% if document.is_animal_farming_project %}
                                     <span>🏢 Élevage</span>
-                                {% endif %}
-                                {% if document.is_intensive_farming %}
-                                    <span>⚡ Intensif</span>
                                 {% endif %}
                                 {% if document.animal_type %}
                                     <span class="animal-type" data-original="{{ document.animal_type }}">{{ document.animal_type }}</span>
@@ -495,8 +485,8 @@
             {% if page_obj.has_other_pages %}
                 <div class="pagination">
                     {% if page_obj.has_previous %}
-                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={{ show_intensive|yesno:'true,false' }}&other_animal={{ show_other_animal|yesno:'true,false' }}&other_docs={{ show_other_docs|yesno:'true,false' }}&page=1">&laquo; Première</a>
-                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={{ show_intensive|yesno:'true,false' }}&other_animal={{ show_other_animal|yesno:'true,false' }}&other_docs={{ show_other_docs|yesno:'true,false' }}&page={{ page_obj.previous_page_number }}">Précédente</a>
+                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}tab={% if show_animal_farming %}animal{% else %}other{% endif %}&page=1">&laquo; Première</a>
+                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}tab={% if show_animal_farming %}animal{% else %}other{% endif %}&page={{ page_obj.previous_page_number }}">Précédente</a>
                     {% endif %}
 
                     <span class="current">
@@ -504,8 +494,8 @@
                     </span>
 
                     {% if page_obj.has_next %}
-                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={{ show_intensive|yesno:'true,false' }}&other_animal={{ show_other_animal|yesno:'true,false' }}&other_docs={{ show_other_docs|yesno:'true,false' }}&page={{ page_obj.next_page_number }}">Suivante</a>
-                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}intensive={{ show_intensive|yesno:'true,false' }}&other_animal={{ show_other_animal|yesno:'true,false' }}&other_docs={{ show_other_docs|yesno:'true,false' }}&page={{ page_obj.paginator.num_pages }}">Dernière &raquo;</a>
+                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}tab={% if show_animal_farming %}animal{% else %}other{% endif %}&page={{ page_obj.next_page_number }}">Suivante</a>
+                        <a href="?{% if current_department %}department={{ current_department }}&{% endif %}{% if current_search %}search={{ current_search }}&{% endif %}tab={% if show_animal_farming %}animal{% else %}other{% endif %}&page={{ page_obj.paginator.num_pages }}">Dernière &raquo;</a>
                     {% endif %}
                 </div>
             {% endif %}

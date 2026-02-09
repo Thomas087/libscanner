@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from .constants import get_prefecture_by_domain
 from .models import GovernmentDocument, NegativeKeyword
-from .scraper import CONFIG, ScrapedCard, extract_pdf_links_from_page
+from .scraper import CONFIG, ScrapedCard
 
 from llm_api.views import call_llm_api, PROVIDER_DEEPSEEK
 
@@ -167,14 +167,14 @@ def get_document_info(full_page_text: str) -> str:
     prompt = f"""
     Analyse le texte ci-dessous et renvoie un JSON avec les champs suivants :
     - summary: Un résumé du texte en français (uniquement en français) et en 100 mots maximum.
-    - is_animal_project: le booléen indiquant si le texte est lié à un projet d'élevage animal
+    - is_animal_farming_project: le booléen indiquant si le texte est lié à la construction ou l'extension d'un projet d'élevage animal
     - animal_type: le type d'animal (ovin, caprin, bovin, porcin, volaille) si le projet est un projet d'élevage animal, sinon renvoie None
     - animal_number: le nombre d'animaux (nombre) si le projet est un projet d'élevage animal si il est précisé, sinon renvoie None
 
     Renvoie un JSON au format suivant :
     {{
         "summary": "Un résumé du texte en français (uniquement en français) et en 100 mots maximum.",
-        "is_animal_project": bool,
+        "is_animal_farming_project": bool,
         "animal_type": str,
         "animal_number": int
     }}
@@ -184,7 +184,7 @@ def get_document_info(full_page_text: str) -> str:
 
     class PrefectureDocumentSummary(BaseModel):
         summary: str
-        is_animal_project: bool
+        is_animal_farming_project: bool
         animal_type: Optional[str] = None
         animal_number: Optional[int] = None
 
@@ -193,23 +193,31 @@ def get_document_info(full_page_text: str) -> str:
     return document_info
 
 
-def check_if_intensive_farming(summary: str) -> bool:
-    """Check if the project is related to intensive farming based on summary"""
-    class IntensiveFarmingCheck(BaseModel):
-        is_intensive_farming: bool
+# Pattern for DD/MM/YYYY (e.g. in detail span "PDF - 0,07 Mb - 17/04/2024")
+_DATE_DDMMYYYY = re.compile(r"(\d{2}/\d{2}/\d{4})")
+# Pattern for YYYY-MM-DD (e.g. in URL or title); converted to DD/MM/YYYY
+_DATE_YYYYMMDD = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
-    prompt = f"""
-    Analyse le texte ci-dessous et renvoie un booléen indiquant si le projet est lié l'élevage intensif d'animaux.
-    Le texte est plus suceptible d'être un projet d'élevage intensif d'animaux si il contient des mentions d'élevage animal et certains des mots suivants : Enquête publique , Consultation du public, 3660, Déclaration, Déclaration initiale, Poulets, Cochons, DUC, Poules
-    
-    Renvoie un JSON au format suivant :
-    {{
-        "is_intensive_farming": bool
-    }}
-    
-    Voici le texte à analyser :
-    {summary}"""
-    return call_llm_api(prompt, response_format=IntensiveFarmingCheck, provider=PROVIDER_DEEPSEEK)
+
+def _extract_date_str_from_multi_doc_link(
+    detail_text: str, href: str, title: str
+) -> Optional[str]:
+    """
+    Extract a date string in DD/MM/YYYY from a multi-doc download link.
+    Tries, in order: detail span text, href, then title.
+    Returns None if no date is found.
+    """
+    # 1) Detail span often has "PDF - 0,07 Mb - 17/04/2024"
+    m = _DATE_DDMMYYYY.search(detail_text or "")
+    if m:
+        return m.group(1)
+    # 2) URL or filename may contain YYYY-MM-DD
+    for text in (href, title):
+        m = _DATE_YYYYMMDD.search(text or "")
+        if m:
+            year, month, day = m.group(1).split("-")
+            return f"{day}/{month}/{year}"
+    return None
 
 
 def extract_arretes_prefectoraux_deterministic(page_url: str) -> List[ScrapedCard]:
@@ -225,8 +233,7 @@ def extract_arretes_prefectoraux_deterministic(page_url: str) -> List[ScrapedCar
     """
     from urllib.parse import urljoin
     from .scraper import fetch_page_soup
-    import re
-    
+
     logger.info(f"[MULTI-DOC] Starting deterministic extraction from page: {page_url}")
     
     try:
@@ -251,44 +258,14 @@ def extract_arretes_prefectoraux_deterministic(page_url: str) -> List[ScrapedCar
                 else:
                     absolute_link = href
                 
-                # Try to extract date from span.fr-link__detail first
-                date_str = None
                 detail_span = link.find("span", class_="fr-link__detail")
-                detail_text = ""
-                if detail_span:
-                    detail_text = detail_span.get_text(strip=True)
-                    # Format: "PDF - 0,07 Mb - 17/04/2024"
-                    # Extract date (DD/MM/YYYY format)
-                    date_match = re.search(r'(\d{2}/\d{2}/\d{4})', detail_text)
-                    if date_match:
-                        date_str = date_match.group(1)
-                
-                # Extract title from link text
-                # Get all text, then remove the detail span text
+                detail_text = detail_span.get_text(strip=True) if detail_span else ""
                 link_text = link.get_text(strip=True)
-                # Remove the detail span text if it was found
                 if detail_text:
                     link_text = link_text.replace(detail_text, "").strip()
-                # Remove "Télécharger" prefix if present
                 title = link_text.replace("Télécharger", "").strip()
-                
-                # If no date from detail span, try to extract from filename (YYYY-MM-DD format)
-                if not date_str:
-                    date_match = re.search(r'(\d{4}-\d{2}-\d{2})', href)
-                    if date_match:
-                        # Convert YYYY-MM-DD to DD/MM/YYYY
-                        year, month, day = date_match.group(1).split('-')
-                        date_str = f"{day}/{month}/{year}"
-                
-                # If still no date, try to extract from title
-                if not date_str:
-                    date_match = re.search(r'(\d{4}-\d{2}-\d{2})', title)
-                    if date_match:
-                        # Convert YYYY-MM-DD to DD/MM/YYYY
-                        year, month, day = date_match.group(1).split('-')
-                        date_str = f"{day}/{month}/{year}"
-                
-                # If no date skip this link
+
+                date_str = _extract_date_str_from_multi_doc_link(detail_text, href, title)
                 if not date_str:
                     logger.warning(f"[MULTI-DOC] Skipping link #{idx}: no date found")
                     continue
@@ -530,10 +507,14 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
             logger.debug(f"Processing item {processed}/{len(scraped_cards)}: '{card.title}'")
 
             # Date from metadata if present
-            date_updated = now()
+            date_updated = None
             if card.metadata and "fr-card__detail" in card.metadata:
                 detail_text = " ".join(card.metadata["fr-card__detail"])
                 date_updated = parse_date_from_detail(detail_text)
+
+            if not date_updated or date_updated < timezone.now() - timedelta(days=days_limit):
+                logger.info(f"Skipping record more than {days_limit} days old: '{card.title}' - {card.link}")
+                continue
 
             # Check negative keywords first (we want to delete records with negative keywords)
             # Query DB for this specific link only
@@ -553,6 +534,12 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                 else:
                     logger.info(f"Negative keyword found in new record, skipping: '{card.title}'")
                 continue
+            
+            # Check if record already exists with same link AND date_updated
+            if existing and existing.date_updated == date_updated:
+                # Record is identical (same link + date_updated), skip it entirely
+                logger.info(f"Skipping unchanged record (same link + date): '{card.title}' - {card.link}")
+                continue
 
             # Detect multi-document pages
             multi_document_page_type = detect_multi_document_page(card.title)
@@ -560,9 +547,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
             
             if contains_multiple_documents:
                 logger.info(f"[MULTI-DOC] ⚠️  MULTI-DOCUMENT PAGE DETECTED: '{card.title}' (type: {multi_document_page_type}) | URL: {card.link}")
-
-            # Special handling for pages containing multiple documents
-            if contains_multiple_documents:
+                
                 # Fetch the page content
                 from .scraper import fetch_page_text, extract_text_from_pdf
                 
@@ -652,17 +637,6 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                 # Skip normal processing for the multi-document page itself
                 continue
 
-            # Skip the record if it's older than the days_limit
-            if date_updated < timezone.now() - timedelta(days=days_limit):
-                logger.info(f"Skipping record more than {days_limit} days old: '{card.title}' - {card.link}")
-                continue
-
-            # Check if record already exists with same link AND date_updated
-            if existing and existing.date_updated == date_updated:
-                # Record is identical (same link + date_updated), skip it entirely
-                logger.info(f"Skipping unchanged record (same link + date): '{card.title}' - {card.link}")
-                continue
-
             # Check if the link is a pdf - if not, fetch the full page text, otherwise extract the text from the pdf
             if not card.link.lower().endswith('.pdf'):
                 from .scraper import fetch_page_text
@@ -674,102 +648,10 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
             # Generate a summary of the full page text
             document_info = get_document_info(full_page_text)
             summary = document_info.summary
-            is_animal_project = document_info.is_animal_project
+            is_animal_farming_project = document_info.is_animal_farming_project
             animal_type = document_info.animal_type
             animal_number = document_info.animal_number
             logger.info(f"Summary generated for '{card.title}': {summary}")
-
-            if is_animal_project:
-                is_intensive_farming = check_if_intensive_farming(summary).is_intensive_farming
-                logger.info(f"Intensive farming check result for '{card.title}': {is_intensive_farming}")
-            else:
-                is_intensive_farming = False
-
-            # If the project is intensive farming, do a more detailed search of document_info
-            # by including the PDF contents linked from the detail page and re-run the analysis.
-            if is_intensive_farming:
-                try:
-                    # --- Hard limits for appended PDF text ---
-                    PER_PDF_CHAR_LIMIT = 200_000          # cap per PDF text chunk (reasonable upper bound)
-                    TOTAL_PDF_CHAR_BUDGET = 400_000       # total budget across all appended PDFs
-
-                    # Collect a few PDF links from the page (dedup + cap)
-                    linked_pdfs = extract_pdf_links_from_page(card.link)
-                    if linked_pdfs:
-                        pdf_sample = []
-                        seen = set()
-                        for u in linked_pdfs:
-                            u_norm = u.strip()
-                            if not u_norm or u_norm in seen:
-                                continue
-                            seen.add(u_norm)
-                            pdf_sample.append(u_norm)
-                            if len(pdf_sample) >= 3:  # PDF cap limit
-                                break
-
-                        # Pull text from those PDFs (skip empties) under strict caps
-                        appended_texts: List[str] = []
-                        total_appended = 0
-                        for pdf_url in pdf_sample:
-                            if total_appended >= TOTAL_PDF_CHAR_BUDGET:
-                                break
-                            try:
-                                pdf_text = extract_text_from_pdf(pdf_url)
-                                if not pdf_text:
-                                    continue
-                                # Enforce per-PDF cap
-                                if len(pdf_text) > PER_PDF_CHAR_LIMIT:
-                                    pdf_text = pdf_text[:PER_PDF_CHAR_LIMIT]
-                                # Enforce overall budget
-                                remaining = TOTAL_PDF_CHAR_BUDGET - total_appended
-                                if remaining <= 0:
-                                    break
-                                if len(pdf_text) > remaining:
-                                    pdf_text = pdf_text[:remaining]
-
-                                appended_texts.append(pdf_text)
-                                total_appended += len(pdf_text)
-                            except Exception as pdf_err:
-                                logger.debug(f"Error extracting appended PDF text from {pdf_url}: {pdf_err}")
-                                continue
-
-                        if appended_texts:
-                            # Build enriched corpus
-                            enriched_text_parts = [
-                                "==== PAGE TEXT START ====",
-                                full_page_text or "",
-                                "==== PAGE TEXT END ====",
-                                "==== LINKED PDF TEXT START ====",
-                                "\n\n==== NEXT PDF ====\n\n".join(appended_texts),
-                                "==== LINKED PDF TEXT END ====",
-                            ]
-                            enriched_text = "\n\n".join(enriched_text_parts)
-
-                            # Explicitly trim to 200k tokens before analysis
-                            enriched_text = trim_text(enriched_text, max_tokens=200_000)
-
-                            # Re-run the same info extraction on the enriched text
-                            refined_info = get_document_info(enriched_text)
-
-                            summary = refined_info.summary
-                            is_animal_project = bool(refined_info.is_animal_project)
-                            animal_type = refined_info.animal_type
-                            animal_number = refined_info.animal_number
-                            logger.info(
-                                f"Refined document info applied for '{card.title}' "
-                                f"(animal_project={is_animal_project}, type={animal_type}, n={animal_number})"
-                            )
-                            
-                            # Clear enriched text from memory
-                            del enriched_text, enriched_text_parts, appended_texts
-                            gc.collect()
-                        else:
-                            logger.debug(f"No usable PDF text found to enrich '{card.title}'")
-                    else:
-                        logger.debug(f"No linked PDFs found on page to enrich '{card.title}'")
-
-                except Exception as refine_err:
-                    logger.warning(f"Refinement step failed for '{card.title}': {refine_err}")
 
             if existing:
                 # Record exists but has different date_updated or other fields changed
@@ -788,8 +670,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     existing.date_updated = date_updated
                     existing.full_page_text = full_page_text
                     existing.summary = summary
-                    existing.is_animal_project = is_animal_project
-                    existing.is_intensive_farming = is_intensive_farming
+                    existing.is_animal_farming_project = is_animal_farming_project
                     if pref_name:
                         existing.prefecture_name = pref_name
                     if pref_code:
@@ -810,8 +691,7 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
                     date_updated=date_updated,
                     full_page_text=full_page_text,
                     summary=summary,
-                    is_animal_project=is_animal_project,
-                    is_intensive_farming=is_intensive_farming,
+                    is_animal_farming_project=is_animal_farming_project,
                     animal_type=animal_type,
                     animal_number=animal_number,
                     prefecture_name=pref_name,
@@ -823,8 +703,6 @@ def save_to_database(scraped_cards: List[ScrapedCard], domain: str, *, now=timez
 
             # Clear memory after processing each item
             del full_page_text, summary, document_info
-            if 'is_intensive_farming' in locals():
-                del is_intensive_farming
             if 'animal_type' in locals():
                 del animal_type
             if 'animal_number' in locals():
