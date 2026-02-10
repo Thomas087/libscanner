@@ -333,69 +333,53 @@ def extract_arretes_prefectoraux_from_page_ai(page_text: str, page_url: str) -> 
     logger.info(f"[MULTI-DOC] Trimmed text length: {len(trimmed_text)} characters (max 200k tokens)")
     
     prompt = f"""
-    Analyse le contenu de cette page web qui contient une liste de documents (arrêtés préfectoraux, communiqués de presse, dossiers de presse, etc.).
-    
-    Cette page peut contenir :
-    - Des listes de documents organisés par mois ou par catégorie
-    - Des liens de téléchargement vers des fichiers PDF, DOCX, ODT, etc.
-    - Des titres de documents avec leurs dates de publication
-    
-    Extrais TOUS les documents présents sur cette page (arrêtés préfectoraux, communiqués, dossiers de presse, etc.) et renvoie une liste JSON avec pour chaque document :
-    - title: Le titre complet du document tel qu'affiché sur la page (obligatoire, chaîne de caractères). 
-      * Nettoie le titre en supprimant: "Télécharger", les extensions de fichier ("PDF", "DOCX", "ODT"), les tailles de fichier (ex: "0,06 Mb", "1,45 Mb"), et les dates de mise à jour en fin de ligne (ex: "- 21/03/2024").
-      * Exemple: "Télécharger 2024-01-11-CP- Surveillance des piscinesPDF - 0,06 Mb - 21/03/2024" → "2024-01-11-CP- Surveillance des piscines"
-      * Exemple: "Télécharger 2024-02-01 - CP - Convention Fepem-Dreets-UrssafPDF - 0,11 Mb - 21/03/2024" → "2024-02-01 - CP - Convention Fepem-Dreets-Urssaf"
-      * Conserve les préfixes comme "CP", "DP", "NAR" s'ils sont présents dans le titre.
-    - link: L'URL complète (absolue) du lien de téléchargement vers le document (PDF, DOCX, ODT, etc.) OU l'URL de la page de détail du document. 
-      * IMPORTANT: Chaque document DOIT avoir son propre lien unique, différent de l'URL de la page actuelle ({page_url})
-      * Si le lien est relatif, construis-le à partir de l'URL de base : {page_url}
-      * Ne renvoie JAMAIS l'URL de la page actuelle comme lien pour un document
-      * Cherche les attributs href des balises <a> qui pointent vers des fichiers ou des pages de documents
-      * (obligatoire, chaîne de caractères)
-    - date_updated: La date de mise à jour ou de publication du document au format DD/MM/YYYY. 
-      * PRIORITÉ 1: Extrais la date depuis le nom du fichier ou le titre si elle est au format YYYY-MM-DD (ex: "2024-01-11" dans le titre → convertis en "11/01/2024")
-      * PRIORITÉ 2: Si une date est mentionnée dans le contexte (mois de la section, date de publication), utilise-la
-      * PRIORITÉ 3: Si aucune date n'est trouvée, utilise la date du jour (obligatoire, chaîne de caractères au format DD/MM/YYYY)
-    
-    Format JSON attendu :
-    {{
+        Analyse cette page web contenant une liste de documents (arrêtés préfectoraux, communiqués, dossiers de presse, etc.), éventuellement organisés par mois ou catégories, avec des liens de téléchargement (PDF, DOCX, ODT…) ou des pages de détail.
+
+        Ta tâche : extraire TOUS les documents listés et renvoyer un JSON :
+
+        {{
         "arretes": [
             {{
-                "title": "2024-01-11-CP- Surveillance des piscines",
-                "link": "https://www.example.com/path/to/document.pdf",
-                "date_updated": "11/01/2024"
-            }},
-            {{
-                "title": "2024-02-01 - CP - Convention Fepem-Dreets-Urssaf",
-                "link": "https://www.example.com/path/to/another-document.pdf",
-                "date_updated": "01/02/2024"
+            "title": "...",
+            "link": "...",
+            "date_updated": "DD/MM/YYYY"
             }}
         ]
-    }}
-    
-    Instructions importantes :
-    - Extrais TOUS les documents téléchargeables listés sur la page, même s'ils sont organisés par mois (ex: "Janvier :", "Février :", "Mars :", etc.)
-    - Les documents peuvent être des PDF, DOCX, ODT, ou autres formats de fichiers, OU des liens vers des pages de détail
-    - Cherche les liens de téléchargement (balises <a> avec href pointant vers des fichiers) OU les liens vers les pages de détail des documents
-    - Le titre peut être dans le texte du lien, dans un élément adjacent, ou dans le texte de la page
-    - Si plusieurs documents sont listés sous un mois, extrais-les TOUS
-    - CRITIQUE: Chaque document DOIT avoir un lien unique et différent. Si plusieurs documents ont le même lien que la page actuelle ({page_url}), c'est une ERREUR - cherche mieux les liens individuels dans le HTML
-    - Pour chaque document, trouve le lien href associé dans la balise <a> qui contient ou est proche du titre du document
-    - Pour nettoyer les titres, supprime systématiquement: "Télécharger", les extensions ("PDF", "DOCX", "ODT"), les tailles ("0,06 Mb", "1,45 Mb"), et les dates de mise à jour en fin ("- 21/03/2024")
-    - Pour les dates, cherche PRIORITAIREMENT le format YYYY-MM-DD dans le nom du fichier ou le titre (ex: "2024-01-11" → convertis en "11/01/2024")
-    - Si la date est au format YYYY-MM-DD, convertis-la systématiquement en DD/MM/YYYY
-    - Assure-toi que tous les liens sont des URLs absolues complètes (commençant par http:// ou https://)
-    - Si un document n'a pas de lien direct, essaie de le construire à partir de l'URL de base : {page_url}
-    - Extrais uniquement les informations présentes sur la page, ne crée pas de données fictives
-    - Si aucun document n'est trouvé, renvoie un tableau vide : {{"arretes": []}}
-    
-    Si tu vois une section "=== LINKS FOUND ON PAGE ===" dans le texte, utilise ces liens pour extraire les URLs des documents. 
-    Chaque ligne de cette section montre le texte du lien et son URL associée. Assure-toi d'utiliser ces URLs spécifiques, 
-    pas l'URL de la page actuelle.
-    
-    Voici le contenu de la page à analyser :
-    {trimmed_text}
-    """
+        }}
+
+        Champs obligatoires :
+
+        - title :
+        - Titre complet du document tel qu’affiché.
+        - Nettoyer en supprimant : “Télécharger”, extensions (PDF, DOCX, ODT…), tailles de fichier (ex: “0,06 Mb”), dates finales (ex: “- 21/03/2024”).
+        - Conserver les préfixes comme CP, DP, NAR, etc.
+
+        - link :
+        - URL ABSOLUE du document (fichier ou page de détail).
+        - Doit être UNIQUE par document et différente de {page_url}.
+        - Extraire depuis les balises <a href>.
+        - Si relatif → construire avec {page_url}.
+        - Ne JAMAIS renvoyer {page_url} comme lien document.
+
+        - date_updated (format DD/MM/YYYY) :
+        - Priorité 1 : date YYYY-MM-DD dans le titre ou nom de fichier → convertir en DD/MM/YYYY.
+        - Priorité 2 : date trouvée dans le contexte (section/mois/publication).
+        - Priorité 3 : date du jour si absente.
+
+        Règles d’extraction :
+
+        - Extraire TOUS les documents, même s’ils sont groupés par mois.
+        - Formats possibles : PDF, DOCX, ODT, autres fichiers ou pages de détail.
+        - Associer chaque titre avec le href du lien correspondant ou le plus proche.
+        - Tous les liens doivent être absolus (http/https).
+        - Ne rien inventer : utiliser uniquement les infos présentes.
+        - Si aucun document → {{"arretes": []}}.
+        - Si une section "=== LINKS FOUND ON PAGE ===" est présente, utiliser ces URLs comme source prioritaire des liens.
+        - Vérifie que chaque document a un lien distinct — sinon, c’est une erreur d’extraction.
+
+        Contenu de la page :
+        {trimmed_text}
+        """
     
     class ArretePrefectoral(BaseModel):
         title: str
