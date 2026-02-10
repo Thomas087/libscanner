@@ -13,8 +13,8 @@ from scraper.utils import format_results_pretty
 logger = logging.getLogger('scraper')
 
 
-@shared_task(name='daily_animal_scraping_task')
-def daily_animal_scraping_task():
+@shared_task(bind=True, name='daily_animal_scraping_task')
+def daily_animal_scraping_task(self):
     """
     Scheduled task that runs daily at 1am to scrape animal keywords.
     Scrapes documents from the last 2 days (current and previous day).
@@ -28,8 +28,11 @@ def daily_animal_scraping_task():
     # Scrape last 2 days (current and previous day)
     days_limit = 2
     
-    # Create task record for tracking
+    # Create task record for tracking.
+    # Use the Celery task ID so it stays unique and
+    # consistent with other ScrapingTask records.
     db_task = ScrapingTask.objects.create(
+        task_id=self.request.id,
         name="daily_animal_scraping",
         keywords=keywords,
         output_format='pretty',
