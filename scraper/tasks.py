@@ -150,17 +150,22 @@ def scrape_animal_keywords_enhanced_task(self, task_id=None, keywords=None, regi
                         keyword=keyword
                     )
 
-                    # Update task state for Celery progress tracking
-                    self.update_state(
-                        state='PROGRESS',
-                        meta={
-                            'current': current_operation,
-                            'total': total_operations,
-                            'prefecture': prefecture['name'],
-                            'keyword': keyword,
-                            'status': 'scraping'
-                        }
-                    )
+                    # Update task state for Celery progress tracking.
+                    # When this task is called synchronously (e.g. from another Celery task),
+                    # self.request.id may be None and Celery's backend will raise a
+                    # "task_id must not be empty" error. In that case, skip progress updates.
+                    request_id = getattr(getattr(self, "request", None), "id", None)
+                    if request_id:
+                        self.update_state(
+                            state='PROGRESS',
+                            meta={
+                                'current': current_operation,
+                                'total': total_operations,
+                                'prefecture': prefecture['name'],
+                                'keyword': keyword,
+                                'status': 'scraping'
+                            }
+                        )
 
                     logger.info(f"Starting scrape for {prefecture['name']} with keyword '{keyword}'")
 
