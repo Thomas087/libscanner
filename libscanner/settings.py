@@ -265,7 +265,7 @@ CELERY_WORKER_DISABLE_RATE_LIMITS = True
 CELERY_BEAT_SCHEDULE = {
     'daily-animal-scraping': {
         'task': 'daily_animal_scraping_task',
-        'schedule': crontab(hour=10, minute=40),  # Run every day at 10:40 AM (Europe/Paris timezone)
+        'schedule': crontab(hour=10, minute=50),  # Run every day at 10:40 AM (Europe/Paris timezone)
         'options': {'queue': 'celery'},
     },
 }

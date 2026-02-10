@@ -202,7 +202,7 @@ def scrape_animal_keywords_enhanced_task(self, task_id=None, keywords=None, regi
                     )
 
                 except Exception as e:
-                    logger.error(f"Error scraping {prefecture['name']}: {e}")
+                    logger.error(f"Error scraping {prefecture['name']}: {e}", exc_info=True)
                     keyword_prefecture_results[prefecture['name']] = {
                         'prefecture': prefecture,
                         'count': 0,
